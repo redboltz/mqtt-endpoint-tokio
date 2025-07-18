@@ -1,3 +1,26 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Takatoshi Kondo
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 use super::{TransportError, TransportOps, ClientConfig, ServerConfig};
 use std::io::IoSlice;
 use std::sync::Arc;
@@ -8,13 +31,13 @@ use tokio_tungstenite::{
     connect_async, accept_async,
     tungstenite::{Message, Error as WsError}
 };
-use tokio_rustls::{TlsStream, TlsAcceptor};
+use tokio_rustls::TlsAcceptor;
 use url::Url;
 
 #[derive(Debug)]
 pub enum WebSocketTransport {
     Plain(WebSocketAdapter<MaybeTlsStream<TcpStream>>),
-    Tls(WebSocketAdapter<TlsStream<TcpStream>>),
+    Tls(WebSocketAdapter<tokio_rustls::server::TlsStream<TcpStream>>),
 }
 
 #[derive(Debug)]
@@ -29,7 +52,7 @@ impl WebSocketTransport {
         Self::Plain(WebSocketAdapter::new(ws))
     }
 
-    pub fn from_tls_stream(ws: WebSocketStream<TlsStream<TcpStream>>) -> Self {
+    pub fn from_tls_stream(ws: WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>) -> Self {
         Self::Tls(WebSocketAdapter::new(ws))
     }
 
@@ -59,7 +82,7 @@ impl WebSocketTransport {
             .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io)?;
 
-        let ws_stream = timeout(config.accept_timeout, accept_async(tcp_stream))
+        let ws_stream = timeout(config.accept_timeout, accept_async(MaybeTlsStream::Plain(tcp_stream)))
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(|e| TransportError::WebSocket(Box::new(e)))?;

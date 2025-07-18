@@ -1,19 +1,56 @@
+/**
+ * MIT License
+ *
+ * Copyright (c) 2025 Takatoshi Kondo
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */
 use super::{TransportError, TransportOps, ClientConfig, ServerConfig};
 use std::io::IoSlice;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, TcpListener};
 use tokio::time::{timeout, Duration};
-use tokio_rustls::{TlsStream, TlsConnector, TlsAcceptor, rustls};
+use tokio_rustls::{TlsConnector, TlsAcceptor, rustls};
 
-#[derive(Debug)]
+trait TlsStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
+impl<T> TlsStream for T where T: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
+
 pub struct TlsTransport {
-    stream: TlsStream<TcpStream>,
+    stream: Box<dyn TlsStream>,
+}
+
+impl std::fmt::Debug for TlsTransport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TlsTransport")
+            .field("stream", &"<TLS stream>")
+            .finish()
+    }
 }
 
 impl TlsTransport {
-    pub fn from_stream(stream: TlsStream<TcpStream>) -> Self {
-        Self { stream }
+    pub fn from_stream<S>(stream: S) -> Self 
+    where
+        S: TlsStream + 'static,
+    {
+        Self { stream: Box::new(stream) }
     }
 
     pub async fn connect(addr: &str, domain: &str) -> Result<Self, TransportError> {
@@ -32,10 +69,16 @@ impl TlsTransport {
             .map_err(TransportError::Io)?;
 
         let tls_config = tls_config.unwrap_or_else(|| {
+            use std::sync::Arc;
+            use rustls::RootCertStore;
+            let mut root_store = RootCertStore::empty();
+            for cert in rustls_native_certs::load_native_certs().unwrap_or_default() {
+                let _ = root_store.add(&rustls::Certificate(cert.0));
+            }
             Arc::new(
                 rustls::ClientConfig::builder()
                     .with_safe_defaults()
-                    .with_root_certificates(rustls_native_certs::load_native_certs().unwrap_or_default())
+                    .with_root_certificates(root_store)
                     .with_no_client_auth()
             )
         });
@@ -71,14 +114,16 @@ impl TlsTransport {
             .map_err(|_| TransportError::Timeout)?
             .map_err(|e| TransportError::Tls(Box::new(e)))?;
 
-        Ok(Self::from_stream(tls_stream.into()))
+        Ok(Self::from_stream(tls_stream))
     }
 }
 
 impl TransportOps for TlsTransport {
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
-        use tokio::io::AsyncWriteExt;
-        self.stream.write_vectored_all(buffers).await.map_err(TransportError::Io)
+        for buf in buffers {
+            self.stream.write_all(buf).await.map_err(TransportError::Io)?;
+        }
+        Ok(())
     }
 
     async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError> {
