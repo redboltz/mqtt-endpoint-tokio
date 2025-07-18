@@ -38,11 +38,11 @@ where
     Role: RoleType + Send + Sync + 'static,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    tx_send: mpsc::UnboundedSender<SendRequest<Role, PacketIdType>>,
+    tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
     _marker: PhantomData<Role>,
 }
 
-enum SendRequest<Role, PacketIdType>
+enum RequestResponse<Role, PacketIdType>
 where
     Role: RoleType,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
@@ -107,11 +107,11 @@ where
             
             while let Some(request) = rx_send.recv().await {
                 match request {
-                    SendRequest::Sendable { packet, response_tx } => {
+                    RequestResponse::Sendable { packet, response_tx } => {
                         let events = packet.dispatch_send_boxed(&mut connection);
                         let _ = response_tx.send(Ok(events));
                     }
-                    SendRequest::GenericPacket { packet: _packet, response_tx } => {
+                    RequestResponse::GenericPacket { packet: _packet, response_tx } => {
                         // TODO: GenericPacket doesn't implement Sendable trait
                         // Need to use send_generic_packet or find alternative approach
                         let events = vec![]; // Temporary placeholder
@@ -138,7 +138,7 @@ where
         let (response_tx, response_rx) = oneshot::channel();
         
         self.tx_send
-            .send(SendRequest::Sendable {
+            .send(RequestResponse::Sendable {
                 packet: Box::new(packet),
                 response_tx,
             })
@@ -157,7 +157,7 @@ where
         let (response_tx, response_rx) = oneshot::channel();
         
         self.tx_send
-            .send(SendRequest::GenericPacket {
+            .send(RequestResponse::GenericPacket {
                 packet,
                 response_tx,
             })
