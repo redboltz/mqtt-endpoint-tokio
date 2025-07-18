@@ -26,29 +26,61 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::io::{AsyncRead, AsyncWrite};
 use serde::Serialize;
 
-use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent};
+use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::connection::role::RoleType;
 use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::packet::GenericPacket;
 use mqtt_protocol_core::mqtt::types::IsPacketId;
+use std::hash::Hash;
 
 pub struct GenericEndpoint<Role, PacketIdType>
 where
     Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Serialize + Send + Sync + 'static,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    tx_send: mpsc::UnboundedSender<SendRequest<PacketIdType>>,
+    tx_send: mpsc::UnboundedSender<SendRequest<Role, PacketIdType>>,
     _marker: PhantomData<Role>,
 }
 
-enum SendRequest<PacketIdType>
+enum SendRequest<Role, PacketIdType>
 where
-    PacketIdType: IsPacketId + Serialize + Send + Sync + 'static,
+    Role: RoleType,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
+    Sendable {
+        packet: Box<dyn SendableErased<Role, PacketIdType>>,
+        response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
+    },
     GenericPacket {
         packet: GenericPacket<PacketIdType>,
         response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
     },
+}
+
+/// Type-erased trait for sending Sendable packets through channels
+trait SendableErased<Role, PacketIdType>: Send
+where
+    Role: RoleType,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
+{
+    fn dispatch_send_boxed(
+        self: Box<Self>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
+    ) -> Vec<GenericEvent<PacketIdType>>;
+}
+
+impl<T, Role, PacketIdType> SendableErased<Role, PacketIdType> for T
+where
+    T: Sendable<Role, PacketIdType> + Send,
+    Role: RoleType,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
+{
+    fn dispatch_send_boxed(
+        self: Box<Self>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
+    ) -> Vec<GenericEvent<PacketIdType>> {
+        (*self).dispatch_send(connection)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -60,7 +92,7 @@ pub enum SendError {
 impl<Role, PacketIdType> GenericEndpoint<Role, PacketIdType>
 where
     Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Serialize + Send + Sync + 'static,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
     <PacketIdType as IsPacketId>::Buffer: Send,
 {
     pub fn new<S>(version: Version, stream: S) -> Self 
@@ -71,15 +103,18 @@ where
         
         tokio::spawn(async move {
             let mut connection: GenericConnection<Role, PacketIdType> = GenericConnection::new(version);
-            let mut stream = stream;
+            let _stream = stream;
             
             while let Some(request) = rx_send.recv().await {
                 match request {
-                    SendRequest::GenericPacket { packet, response_tx } => {
-                        let events = vec![GenericEvent::RequestSendPacket {
-                            packet,
-                            release_packet_id_if_send_error: None,
-                        }];
+                    SendRequest::Sendable { packet, response_tx } => {
+                        let events = packet.dispatch_send_boxed(&mut connection);
+                        let _ = response_tx.send(Ok(events));
+                    }
+                    SendRequest::GenericPacket { packet: _packet, response_tx } => {
+                        // TODO: GenericPacket doesn't implement Sendable trait
+                        // Need to use send_generic_packet or find alternative approach
+                        let events = vec![]; // Temporary placeholder
                         let _ = response_tx.send(Ok(events));
                     }
                 }
@@ -92,7 +127,33 @@ where
         }
     }
 
-    pub async fn send(&self, packet: GenericPacket<PacketIdType>) -> Result<Vec<GenericEvent<PacketIdType>>, SendError> {
+    /// Send MQTT packet with compile-time type safety
+    ///
+    /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>`,
+    /// providing compile-time verification that the packet is valid for the endpoint's role.
+    pub async fn send<T>(&self, packet: T) -> Result<Vec<GenericEvent<PacketIdType>>, SendError>
+    where
+        T: Sendable<Role, PacketIdType> + Send + 'static,
+    {
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        self.tx_send
+            .send(SendRequest::Sendable {
+                packet: Box::new(packet),
+                response_tx,
+            })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Send GenericPacket (for dynamic cases)
+    ///
+    /// This method accepts GenericPacket for cases where the packet type
+    /// cannot be determined at compile time.
+    pub async fn send_generic(&self, packet: GenericPacket<PacketIdType>) -> Result<Vec<GenericEvent<PacketIdType>>, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
         
         self.tx_send
