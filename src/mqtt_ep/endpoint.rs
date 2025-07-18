@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 use tokio::sync::{mpsc, oneshot};
+use tokio::io::{AsyncRead, AsyncWrite};
 use serde::Serialize;
 
 use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent};
@@ -39,11 +40,15 @@ where
     PacketIdType: IsPacketId + Serialize + Send + Sync + 'static,
     <PacketIdType as IsPacketId>::Buffer: Send,
 {
-    pub fn new() -> Self {
+    pub fn new<S>(version: Version, stream: S) -> Self 
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
         let (tx_send, mut rx_send) = mpsc::unbounded_channel();
         
         tokio::spawn(async move {
-            let mut connection: GenericConnection<Role, PacketIdType> = GenericConnection::new(Version::V3_1_1);
+            let mut connection: GenericConnection<Role, PacketIdType> = GenericConnection::new(version);
+            let mut stream = stream;
             
             while let Some(request) = rx_send.recv().await {
                 match request {
