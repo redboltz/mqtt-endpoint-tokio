@@ -51,9 +51,16 @@ where
         packet: Box<dyn SendableErased<Role, PacketIdType>>,
         response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
     },
-    GenericPacket {
-        packet: GenericPacket<PacketIdType>,
-        response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
+    AcquirePacketId {
+        response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
+    },
+    RegisterPacketId {
+        packet_id: PacketIdType,
+        response_tx: oneshot::Sender<Result<(), SendError>>,
+    },
+    ReleasePacketId {
+        packet_id: PacketIdType,
+        response_tx: oneshot::Sender<Result<(), SendError>>,
     },
 }
 
@@ -83,6 +90,7 @@ where
     }
 }
 
+
 #[derive(Debug, Clone)]
 pub enum SendError {
     ChannelClosed,
@@ -111,11 +119,29 @@ where
                         let events = packet.dispatch_send_boxed(&mut connection);
                         let _ = response_tx.send(Ok(events));
                     }
-                    RequestResponse::GenericPacket { packet: _packet, response_tx } => {
-                        // TODO: GenericPacket doesn't implement Sendable trait
-                        // Need to use send_generic_packet or find alternative approach
-                        let events = vec![]; // Temporary placeholder
-                        let _ = response_tx.send(Ok(events));
+                    RequestResponse::AcquirePacketId { response_tx } => {
+                        match connection.acquire_unique_packet_id() {
+                            Ok(packet_id) => {
+                                let _ = response_tx.send(Ok(packet_id));
+                            }
+                            Err(e) => {
+                                let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
+                            }
+                        }
+                    }
+                    RequestResponse::RegisterPacketId { packet_id, response_tx } => {
+                        match connection.register_packet_id(packet_id) {
+                            Ok(()) => {
+                                let _ = response_tx.send(Ok(()));
+                            }
+                            Err(e) => {
+                                let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
+                            }
+                        }
+                    }
+                    RequestResponse::ReleasePacketId { packet_id, response_tx } => {
+                        let _events = connection.release_packet_id(packet_id);
+                        let _ = response_tx.send(Ok(()));
                     }
                 }
             }
@@ -129,11 +155,12 @@ where
 
     /// Send MQTT packet with compile-time type safety
     ///
-    /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>`,
-    /// providing compile-time verification that the packet is valid for the endpoint's role.
+    /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>` 
+    /// for compile-time verification, or `GenericPacket<PacketIdType>` for dynamic cases.
+    /// All packets are converted to GenericPacket internally via the Into trait.
     pub async fn send<T>(&self, packet: T) -> Result<Vec<GenericEvent<PacketIdType>>, SendError>
     where
-        T: Sendable<Role, PacketIdType> + Send + 'static,
+        T: Into<GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
     {
         let (response_tx, response_rx) = oneshot::channel();
         
@@ -149,18 +176,38 @@ where
             .map_err(|_| SendError::ChannelClosed)?
     }
 
-    /// Send GenericPacket (for dynamic cases)
-    ///
-    /// This method accepts GenericPacket for cases where the packet type
-    /// cannot be determined at compile time.
-    pub async fn send_generic(&self, packet: GenericPacket<PacketIdType>) -> Result<Vec<GenericEvent<PacketIdType>>, SendError> {
+    /// Acquire a unique packet ID
+    pub async fn acquire_unique_packet_id(&self) -> Result<PacketIdType, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
         
         self.tx_send
-            .send(RequestResponse::GenericPacket {
-                packet,
-                response_tx,
-            })
+            .send(RequestResponse::AcquirePacketId { response_tx })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Register a packet ID as in use
+    pub async fn register_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        self.tx_send
+            .send(RequestResponse::RegisterPacketId { packet_id, response_tx })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Release a packet ID
+    pub async fn release_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+        
+        self.tx_send
+            .send(RequestResponse::ReleasePacketId { packet_id, response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
         response_rx
