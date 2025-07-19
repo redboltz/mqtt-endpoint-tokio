@@ -118,14 +118,8 @@ where
             let mut stream = stream;
             let mut timers: Vec<(TimerKind, tokio::task::JoinHandle<()>)> = Vec::new();
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
-            let mut event_queue: Vec<GenericEvent<PacketIdType>> = Vec::new();
             
             loop {
-                // Process any queued events first
-                while let Some(event) = event_queue.pop() {
-                    Self::process_single_event(&mut connection, &mut stream, &mut timers, &timer_tx, &mut event_queue, event).await;
-                }
-                
                 tokio::select! {
                     // Handle requests from external API
                     request = rx_send.recv() => {
@@ -135,8 +129,8 @@ where
                                 if let Err(_) = response_tx.send(Ok(events.clone())) {
                                     break; // Channel closed, endpoint dropped
                                 }
-                                // Queue events for processing
-                                event_queue.extend(events);
+                                // Process events recursively
+                                Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
                                 match connection.acquire_unique_packet_id() {
@@ -161,8 +155,8 @@ where
                             Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                                 let events = connection.release_packet_id(packet_id);
                                 let _ = response_tx.send(Ok(()));
-                                // Queue events for processing
-                                event_queue.extend(events);
+                                // Process events recursively
+                                Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
                             }
                             None => break, // Channel closed, endpoint dropped
                         }
@@ -174,8 +168,8 @@ where
                             // Timer has fired - remove it from active timers
                             timers.retain(|(timer_kind, _)| *timer_kind != kind);
                             let events = connection.notify_timer_fired(kind);
-                            // Queue events for processing
-                            event_queue.extend(events);
+                            // Process events recursively
+                            Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
                         }
                     }
                 }
@@ -193,104 +187,107 @@ where
         }
     }
 
-    async fn process_single_event<S>(
+    async fn process_events<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
         stream: &mut S,
         timers: &mut Vec<(TimerKind, tokio::task::JoinHandle<()>)>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
-        event_queue: &mut Vec<GenericEvent<PacketIdType>>,
-        event: GenericEvent<PacketIdType>,
+        events: Vec<GenericEvent<PacketIdType>>,
     ) 
     where
         S: AsyncWrite + Unpin,
     {
-        match event {
-            GenericEvent::RequestSendPacket { packet, release_packet_id_if_send_error } => {
-                // Get buffers from packet
-                let buffers = packet.to_buffers();
-                
-                // Send using vectored I/O
-                let send_result = match stream.write_vectored(&buffers).await {
-                    Ok(bytes_written) => {
-                        // Verify all data was written
-                        let total_len: usize = buffers.iter().map(|b| b.len()).sum();
-                        if bytes_written == total_len {
-                            Ok(())
-                        } else {
-                            // Partial write - treat as error for MQTT packet integrity
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::WriteZero, 
-                                format!("Partial write: {}/{} bytes", bytes_written, total_len)
-                            ))
+        for event in events {
+            match event {
+                GenericEvent::RequestSendPacket { packet, release_packet_id_if_send_error } => {
+                    // Get buffers from packet
+                    let buffers = packet.to_buffers();
+                    
+                    // Send using vectored I/O
+                    let send_result = match stream.write_vectored(&buffers).await {
+                        Ok(bytes_written) => {
+                            // Verify all data was written
+                            let total_len: usize = buffers.iter().map(|b| b.len()).sum();
+                            if bytes_written == total_len {
+                                Ok(())
+                            } else {
+                                // Partial write - treat as error for MQTT packet integrity
+                                Err(std::io::Error::new(
+                                    std::io::ErrorKind::WriteZero, 
+                                    format!("Partial write: {}/{} bytes", bytes_written, total_len)
+                                ))
+                            }
                         }
-                    }
-                    Err(e) => Err(e),
-                };
-                
-                match send_result {
-                    Ok(_) => {
-                        // Successfully sent, flush the stream
-                        if let Err(_) = stream.flush().await {
-                            // Flush failed, release packet ID if needed
+                        Err(e) => Err(e),
+                    };
+                    
+                    match send_result {
+                        Ok(_) => {
+                            // Successfully sent, flush the stream
+                            if let Err(_) = stream.flush().await {
+                                // Flush failed, release packet ID if needed
+                                if let Some(packet_id) = release_packet_id_if_send_error {
+                                    let release_events = connection.release_packet_id(packet_id);
+                                    // Process sub-events using boxed future to avoid recursion limit
+                                    Box::pin(Self::process_events(connection, stream, timers, timer_tx, release_events)).await;
+                                }
+                            }
+                        }
+                        Err(_) => {
+                            // Send failed, release packet ID if needed
                             if let Some(packet_id) = release_packet_id_if_send_error {
                                 let release_events = connection.release_packet_id(packet_id);
-                                event_queue.extend(release_events);
+                                // Process sub-events using boxed future to avoid recursion limit
+                                Box::pin(Self::process_events(connection, stream, timers, timer_tx, release_events)).await;
                             }
                         }
                     }
-                    Err(_) => {
-                        // Send failed, release packet ID if needed
-                        if let Some(packet_id) = release_packet_id_if_send_error {
-                            let release_events = connection.release_packet_id(packet_id);
-                            event_queue.extend(release_events);
-                        }
-                    }
-                }
-            }
-            
-            GenericEvent::NotifyPacketIdReleased(_packet_id) => {
-                // Currently do nothing as specified
-            }
-            
-            GenericEvent::RequestTimerReset { kind, duration_ms } => {
-                // Cancel existing timer if present
-                if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
-                    let (_, handle) = timers.remove(pos);
-                    handle.abort();
                 }
                 
-                // Set new timer
-                let timer_tx_clone = timer_tx.clone();
-                let handle = tokio::spawn(async move {
-                    sleep(Duration::from_millis(duration_ms)).await;
-                    let _ = timer_tx_clone.send(kind);
-                });
-                timers.push((kind, handle));
-            }
-            
-            GenericEvent::RequestTimerCancel(kind) => {
-                // Cancel timer if present
-                if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
-                    let (_, handle) = timers.remove(pos);
-                    handle.abort();
+                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
+                    // Currently do nothing as specified
                 }
-            }
-            
-            GenericEvent::RequestClose => {
-                // Shutdown the stream - for most stream types, this means
-                // dropping the stream or calling shutdown if available
-                let _ = stream.shutdown().await;
-                // Note: In a real implementation, we would signal the main loop to exit
-            }
-            
-            GenericEvent::NotifyError(_error) => {
-                // Handle error - could log or trigger connection closure
-                // For now, continue processing
-            }
-            
-            GenericEvent::NotifyPacketReceived(_packet) => {
-                // This would be handled by a separate receive loop
-                // in a full implementation
+                
+                GenericEvent::RequestTimerReset { kind, duration_ms } => {
+                    // Cancel existing timer if present
+                    if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
+                        let (_, handle) = timers.remove(pos);
+                        handle.abort();
+                    }
+                    
+                    // Set new timer
+                    let timer_tx_clone = timer_tx.clone();
+                    let handle = tokio::spawn(async move {
+                        sleep(Duration::from_millis(duration_ms)).await;
+                        let _ = timer_tx_clone.send(kind);
+                    });
+                    timers.push((kind, handle));
+                }
+                
+                GenericEvent::RequestTimerCancel(kind) => {
+                    // Cancel timer if present
+                    if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
+                        let (_, handle) = timers.remove(pos);
+                        handle.abort();
+                    }
+                }
+                
+                GenericEvent::RequestClose => {
+                    // Shutdown the stream - for most stream types, this means
+                    // dropping the stream or calling shutdown if available
+                    let _ = stream.shutdown().await;
+                    // Note: In a real implementation, we would signal the main loop to exit
+                }
+                
+                GenericEvent::NotifyError(_error) => {
+                    // Handle error - could log or trigger connection closure
+                    // For now, continue processing
+                }
+                
+                GenericEvent::NotifyPacketReceived(_packet) => {
+                    // This would be handled by a separate receive loop
+                    // in a full implementation
+                }
             }
         }
     }
