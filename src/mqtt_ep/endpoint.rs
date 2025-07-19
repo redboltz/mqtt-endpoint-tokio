@@ -209,35 +209,22 @@ where
                 // Get buffers from packet
                 let buffers = packet.to_buffers();
                 
-                // Attempt to send via tokio using vectored I/O
-                let send_result = if buffers.len() == 1 {
-                    // Single buffer - use write_all for better compatibility
-                    stream.write_all(&buffers[0]).await
-                } else {
-                    // Multiple buffers - try vectored write, fallback to sequential
-                    match stream.write_vectored(&buffers).await {
-                        Ok(bytes_written) => {
-                            // Verify all data was written
-                            let total_len: usize = buffers.iter().map(|b| b.len()).sum();
-                            if bytes_written == total_len {
-                                Ok(())
-                            } else {
-                                // Partial write - for simplicity, treat as error
-                                Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "Partial write"))
-                            }
-                        }
-                        Err(_) => {
-                            // Fallback: write buffers sequentially
-                            let mut result = Ok(());
-                            for buffer in &buffers {
-                                if let Err(e) = stream.write_all(buffer).await {
-                                    result = Err(e);
-                                    break;
-                                }
-                            }
-                            result
+                // Send using vectored I/O
+                let send_result = match stream.write_vectored(&buffers).await {
+                    Ok(bytes_written) => {
+                        // Verify all data was written
+                        let total_len: usize = buffers.iter().map(|b| b.len()).sum();
+                        if bytes_written == total_len {
+                            Ok(())
+                        } else {
+                            // Partial write - treat as error for MQTT packet integrity
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::WriteZero, 
+                                format!("Partial write: {}/{} bytes", bytes_written, total_len)
+                            ))
                         }
                     }
+                    Err(e) => Err(e),
                 };
                 
                 match send_result {
