@@ -37,7 +37,7 @@ async fn test_packet_id_when_available_api_compilation() {
     let endpoint: ClientEndpoint = GenericEndpoint::new(Version::V3_1_1, client_stream);
 
     // Test that the method exists and compiles
-    // Use timeout to prevent indefinite waiting 
+    // Use timeout to prevent indefinite waiting
     let result = timeout(
         Duration::from_millis(50),
         endpoint.acquire_packet_id_when_available(),
@@ -57,14 +57,14 @@ async fn test_packet_id_when_available_api_compilation() {
     }
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_acquire_unique_vs_when_available_api() {
     // Test that both packet ID acquisition methods compile
     let (client_stream, _server_stream) = tokio::io::duplex(1024);
     let endpoint: ClientEndpoint = GenericEndpoint::new(Version::V3_1_1, client_stream);
 
     // Both methods should compile and have similar signatures
-    let _immediate_future = endpoint.acquire_unique_packet_id();
+    let _immediate_future = endpoint.acquire_packet_id();
     let _waiting_future = endpoint.acquire_packet_id_when_available();
 
     // Test that they both return similar result types (compilation test)

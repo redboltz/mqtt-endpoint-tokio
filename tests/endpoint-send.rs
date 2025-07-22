@@ -99,7 +99,7 @@ async fn test_packet_id_management() {
         GenericEndpoint::new(mqtt::Version::V3_1_1, client_stream);
 
     // Test packet ID management methods
-    let _packet_id_result = endpoint.acquire_unique_packet_id().await;
+    let _packet_id_result = endpoint.acquire_packet_id().await;
     let _register_result = endpoint.register_packet_id(1).await;
     let _release_result = endpoint.release_packet_id(1).await;
 
@@ -125,7 +125,7 @@ async fn test_send_with_u32_packet_id() {
     let _result2 = endpoint.send(generic_packet).await;
 
     // Test packet ID management with u32
-    let _packet_id_result = endpoint.acquire_unique_packet_id().await;
+    let _packet_id_result = endpoint.acquire_packet_id().await;
     let _register_result = endpoint.register_packet_id(1u32).await;
     let _release_result = endpoint.release_packet_id(1u32).await;
 }

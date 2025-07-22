@@ -163,7 +163,7 @@ where
             let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
-            
+
             // Queue for pending packet ID acquisition requests
             let mut pending_packet_id_requests: Vec<oneshot::Sender<Result<PacketIdType, SendError>>> = Vec::new();
 
@@ -228,7 +228,7 @@ where
                                 }
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
-                                match connection.acquire_unique_packet_id() {
+                                match connection.acquire_packet_id() {
                                     Ok(packet_id) => {
                                         let _ = response_tx.send(Ok(packet_id));
                                     }
@@ -238,7 +238,7 @@ where
                                 }
                             }
                             Some(RequestResponse::AcquirePacketIdWhenAvailable { response_tx }) => {
-                                match connection.acquire_unique_packet_id() {
+                                match connection.acquire_packet_id() {
                                     Ok(packet_id) => {
                                         // Packet ID available immediately
                                         let _ = response_tx.send(Ok(packet_id));
@@ -391,7 +391,7 @@ where
     ) {
         // Process requests from the front (index 0) to maintain FIFO order
         while !pending_requests.is_empty() {
-            match connection.acquire_unique_packet_id() {
+            match connection.acquire_packet_id() {
                 Ok(packet_id) => {
                     // Successfully acquired packet ID, remove and send to the first waiting requester
                     let response_tx = pending_requests.remove(0);
@@ -618,7 +618,7 @@ where
     }
 
     /// Acquire a unique packet ID
-    pub async fn acquire_unique_packet_id(&self) -> Result<PacketIdType, SendError> {
+    pub async fn acquire_packet_id(&self) -> Result<PacketIdType, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
@@ -629,9 +629,9 @@ where
     }
 
     /// Acquire a unique packet ID, waiting until one becomes available
-    /// 
-    /// Unlike acquire_unique_packet_id(), this method will not return an error
-    /// if all packet IDs are currently in use. Instead, it will wait until 
+    ///
+    /// Unlike acquire_packet_id(), this method will not return an error
+    /// if all packet IDs are currently in use. Instead, it will wait until
     /// a packet ID is released and becomes available.
     pub async fn acquire_packet_id_when_available(&self) -> Result<PacketIdType, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
