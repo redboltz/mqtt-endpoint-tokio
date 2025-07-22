@@ -51,9 +51,12 @@ where
     Role: RoleType,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    Sendable {
+    Send {
         packet: Box<dyn SendableErased<Role, PacketIdType>>,
         response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
+    },
+    Recv {
+        response_tx: oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
     },
     AcquirePacketId {
         response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
@@ -124,13 +127,16 @@ where
                     // Handle requests from external API
                     request = rx_send.recv() => {
                         match request {
-                            Some(RequestResponse::Sendable { packet, response_tx }) => {
+                            Some(RequestResponse::Send { packet, response_tx }) => {
                                 let events = packet.dispatch_send_boxed(&mut connection);
                                 if let Err(_) = response_tx.send(Ok(events.clone())) {
                                     break; // Channel closed, endpoint dropped
                                 }
                                 // Process events recursively
                                 Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
+                            }
+                            Some(RequestResponse::Recv { response_tx }) => {
+
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
                                 match connection.acquire_unique_packet_id() {
@@ -304,7 +310,7 @@ where
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
-            .send(RequestResponse::Sendable {
+            .send(RequestResponse::Send {
                 packet: Box::new(packet),
                 response_tx,
             })
@@ -314,6 +320,21 @@ where
             .await
             .map_err(|_| SendError::ChannelClosed)?
     }
+
+    pub async fn recv(&self) -> Result<GenericPacket<PacketIdType>, SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx_send
+            .send(RequestResponse::Recv {
+                response_tx,
+            })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| SendError::ChannelClosed)?
+    }
+
 
     /// Acquire a unique packet ID
     pub async fn acquire_unique_packet_id(&self) -> Result<PacketIdType, SendError> {
