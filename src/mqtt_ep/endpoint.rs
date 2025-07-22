@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::io::Cursor;
 /**
  * MIT License
  *
@@ -24,10 +25,9 @@ use serde::Serialize;
  */
 use std::marker::PhantomData;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
-use std::io::Cursor;
 
 use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::connection::event::TimerKind;
@@ -124,9 +124,7 @@ where
             let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
-            
-            // Queue for pending recv requests
-            let mut pending_recv_requests: Vec<oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>> = Vec::new();
+
             let mut read_buffer = vec![0u8; 4096];
 
             loop {
@@ -143,8 +141,42 @@ where
                                 Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                             }
                             Some(RequestResponse::Recv { response_tx }) => {
-                                // Add recv request to pending queue
-                                pending_recv_requests.push(response_tx);
+                                // Read until we get at least one event (complete packet)
+                                loop {
+                                    match stream.read(&mut read_buffer).await {
+                                        Ok(0) => {
+                                            // EOF - connection closed
+                                            let _ = response_tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
+                                            break;
+                                        }
+                                        Ok(n) => {
+                                            // Process received bytes
+                                            let mut cursor = Cursor::new(&read_buffer[..n]);
+                                            let events = connection.recv(&mut cursor);
+
+                                            if events.is_empty() {
+                                                // Packet incomplete - need more data
+                                                continue;
+                                            } else {
+                                                // Process events and check for received packet
+                                                let received_packet = Self::process_events_with_recv(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+
+                                                if let Some(packet) = received_packet {
+                                                    let _ = response_tx.send(Ok(packet));
+                                                    break;
+                                                } else {
+                                                    // No packet received in this batch - continue reading
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        Err(e) => {
+                                            // Read error
+                                            let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
+                                            break;
+                                        }
+                                    }
+                                }
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
                                 match connection.acquire_unique_packet_id() {
@@ -191,42 +223,6 @@ where
                         }
                     }
 
-                    // Handle incoming data from stream
-                    read_result = stream.read(&mut read_buffer) => {
-                        match read_result {
-                            Ok(0) => {
-                                // EOF - connection closed
-                                break;
-                            }
-                            Ok(n) => {
-                                // Process received bytes
-                                let mut cursor = Cursor::new(&read_buffer[..n]);
-                                let events = connection.recv(&mut cursor);
-                                
-                                // Handle events and look for received packets
-                                for event in events {
-                                    match event {
-                                        GenericEvent::NotifyPacketReceived(packet) => {
-                                            // Send packet to first pending recv request
-                                            if let Some(response_tx) = pending_recv_requests.pop() {
-                                                let _ = response_tx.send(Ok(packet));
-                                            }
-                                            // If no pending recv requests, packet is dropped
-                                            // In a real implementation, you might want to buffer packets
-                                        }
-                                        _ => {
-                                            // Process other events recursively
-                                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, vec![event]).await;
-                                        }
-                                    }
-                                }
-                            }
-                            Err(_) => {
-                                // Read error - close connection
-                                break;
-                            }
-                        }
-                    }
                 }
             }
 
@@ -248,6 +244,45 @@ where
         }
     }
 
+    async fn process_events_with_recv<S>(
+        connection: &mut GenericConnection<Role, PacketIdType>,
+        stream: &mut S,
+        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
+        events: Vec<GenericEvent<PacketIdType>>,
+    ) -> Option<GenericPacket<PacketIdType>>
+    where
+        S: AsyncWrite + Unpin,
+    {
+        let mut received_packet = None;
+
+        for event in events {
+            match event {
+                GenericEvent::NotifyPacketReceived(packet) => {
+                    // Store the received packet (should be only one per events batch)
+                    received_packet = Some(packet);
+                }
+                _ => {
+                    // Process other events as before
+                    Self::process_single_event(
+                        connection,
+                        stream,
+                        pingreq_send_timer,
+                        pingreq_recv_timer,
+                        pingresp_recv_timer,
+                        timer_tx,
+                        event,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        received_packet
+    }
+
     async fn process_events<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
         stream: &mut S,
@@ -260,55 +295,61 @@ where
         S: AsyncWrite + Unpin,
     {
         for event in events {
-            match event {
-                GenericEvent::RequestSendPacket {
-                    packet,
-                    release_packet_id_if_send_error,
-                } => {
-                    // Get buffers from packet
-                    let buffers = packet.to_buffers();
-                    let total_len = packet.size();
+            Self::process_single_event(
+                connection,
+                stream,
+                pingreq_send_timer,
+                pingreq_recv_timer,
+                pingresp_recv_timer,
+                timer_tx,
+                event,
+            )
+            .await;
+        }
+    }
 
-                    // Send using vectored I/O
-                    let send_result = match stream.write_vectored(&buffers).await {
-                        Ok(bytes_written) => {
-                            // Verify all data was written
-                            if bytes_written == total_len {
-                                Ok(())
-                            } else {
-                                // Partial write - treat as error for MQTT packet integrity
-                                Err(std::io::Error::new(
-                                    std::io::ErrorKind::WriteZero,
-                                    format!("Partial write: {}/{} bytes", bytes_written, total_len),
-                                ))
-                            }
-                        }
-                        Err(e) => Err(e),
-                    };
+    async fn process_single_event<S>(
+        connection: &mut GenericConnection<Role, PacketIdType>,
+        stream: &mut S,
+        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
+        event: GenericEvent<PacketIdType>,
+    ) where
+        S: AsyncWrite + Unpin,
+    {
+        match event {
+            GenericEvent::RequestSendPacket {
+                packet,
+                release_packet_id_if_send_error,
+            } => {
+                // Get buffers from packet
+                let buffers = packet.to_buffers();
+                let total_len = packet.size();
 
-                    match send_result {
-                        Ok(_) => {
-                            // Successfully sent, flush the stream
-                            if let Err(_) = stream.flush().await {
-                                // Flush failed, release packet ID if needed
-                                if let Some(packet_id) = release_packet_id_if_send_error {
-                                    let release_events = connection.release_packet_id(packet_id);
-                                    // Process sub-events using boxed future to avoid recursion limit
-                                    Box::pin(Self::process_events(
-                                        connection,
-                                        stream,
-                                        pingreq_send_timer,
-                                        pingreq_recv_timer,
-                                        pingresp_recv_timer,
-                                        timer_tx,
-                                        release_events,
-                                    ))
-                                    .await;
-                                }
-                            }
+                // Send using vectored I/O
+                let send_result = match stream.write_vectored(&buffers).await {
+                    Ok(bytes_written) => {
+                        // Verify all data was written
+                        if bytes_written == total_len {
+                            Ok(())
+                        } else {
+                            // Partial write - treat as error for MQTT packet integrity
+                            Err(std::io::Error::new(
+                                std::io::ErrorKind::WriteZero,
+                                format!("Partial write: {}/{} bytes", bytes_written, total_len),
+                            ))
                         }
-                        Err(_) => {
-                            // Send failed, release packet ID if needed
+                    }
+                    Err(e) => Err(e),
+                };
+
+                match send_result {
+                    Ok(_) => {
+                        // Successfully sent, flush the stream
+                        if let Err(_) = stream.flush().await {
+                            // Flush failed, release packet ID if needed
                             if let Some(packet_id) = release_packet_id_if_send_error {
                                 let release_events = connection.release_packet_id(packet_id);
                                 // Process sub-events using boxed future to avoid recursion limit
@@ -325,88 +366,105 @@ where
                             }
                         }
                     }
-                }
-
-                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
-                    // Currently do nothing as specified
-                }
-
-                GenericEvent::RequestTimerReset { kind, duration_ms } => {
-                    // Cancel existing timer if present and set new timer
-                    match kind {
-                        TimerKind::PingreqSend => {
-                            if let Some(handle) = pingreq_send_timer.take() {
-                                handle.abort();
-                            }
-                            let timer_tx_clone = timer_tx.clone();
-                            let handle = tokio::spawn(async move {
-                                sleep(Duration::from_millis(duration_ms)).await;
-                                let _ = timer_tx_clone.send(kind);
-                            });
-                            *pingreq_send_timer = Some(handle);
-                        }
-                        TimerKind::PingreqRecv => {
-                            if let Some(handle) = pingreq_recv_timer.take() {
-                                handle.abort();
-                            }
-                            let timer_tx_clone = timer_tx.clone();
-                            let handle = tokio::spawn(async move {
-                                sleep(Duration::from_millis(duration_ms)).await;
-                                let _ = timer_tx_clone.send(kind);
-                            });
-                            *pingreq_recv_timer = Some(handle);
-                        }
-                        TimerKind::PingrespRecv => {
-                            if let Some(handle) = pingresp_recv_timer.take() {
-                                handle.abort();
-                            }
-                            let timer_tx_clone = timer_tx.clone();
-                            let handle = tokio::spawn(async move {
-                                sleep(Duration::from_millis(duration_ms)).await;
-                                let _ = timer_tx_clone.send(kind);
-                            });
-                            *pingresp_recv_timer = Some(handle);
+                    Err(_) => {
+                        // Send failed, release packet ID if needed
+                        if let Some(packet_id) = release_packet_id_if_send_error {
+                            let release_events = connection.release_packet_id(packet_id);
+                            // Process sub-events using boxed future to avoid recursion limit
+                            Box::pin(Self::process_events(
+                                connection,
+                                stream,
+                                pingreq_send_timer,
+                                pingreq_recv_timer,
+                                pingresp_recv_timer,
+                                timer_tx,
+                                release_events,
+                            ))
+                            .await;
                         }
                     }
                 }
+            }
 
-                GenericEvent::RequestTimerCancel(kind) => {
-                    // Cancel timer if present
-                    match kind {
-                        TimerKind::PingreqSend => {
-                            if let Some(handle) = pingreq_send_timer.take() {
-                                handle.abort();
-                            }
+            GenericEvent::NotifyPacketIdReleased(_packet_id) => {
+                // Currently do nothing as specified
+            }
+
+            GenericEvent::RequestTimerReset { kind, duration_ms } => {
+                // Cancel existing timer if present and set new timer
+                match kind {
+                    TimerKind::PingreqSend => {
+                        if let Some(handle) = pingreq_send_timer.take() {
+                            handle.abort();
                         }
-                        TimerKind::PingreqRecv => {
-                            if let Some(handle) = pingreq_recv_timer.take() {
-                                handle.abort();
-                            }
+                        let timer_tx_clone = timer_tx.clone();
+                        let handle = tokio::spawn(async move {
+                            sleep(Duration::from_millis(duration_ms)).await;
+                            let _ = timer_tx_clone.send(kind);
+                        });
+                        *pingreq_send_timer = Some(handle);
+                    }
+                    TimerKind::PingreqRecv => {
+                        if let Some(handle) = pingreq_recv_timer.take() {
+                            handle.abort();
                         }
-                        TimerKind::PingrespRecv => {
-                            if let Some(handle) = pingresp_recv_timer.take() {
-                                handle.abort();
-                            }
+                        let timer_tx_clone = timer_tx.clone();
+                        let handle = tokio::spawn(async move {
+                            sleep(Duration::from_millis(duration_ms)).await;
+                            let _ = timer_tx_clone.send(kind);
+                        });
+                        *pingreq_recv_timer = Some(handle);
+                    }
+                    TimerKind::PingrespRecv => {
+                        if let Some(handle) = pingresp_recv_timer.take() {
+                            handle.abort();
+                        }
+                        let timer_tx_clone = timer_tx.clone();
+                        let handle = tokio::spawn(async move {
+                            sleep(Duration::from_millis(duration_ms)).await;
+                            let _ = timer_tx_clone.send(kind);
+                        });
+                        *pingresp_recv_timer = Some(handle);
+                    }
+                }
+            }
+
+            GenericEvent::RequestTimerCancel(kind) => {
+                // Cancel timer if present
+                match kind {
+                    TimerKind::PingreqSend => {
+                        if let Some(handle) = pingreq_send_timer.take() {
+                            handle.abort();
+                        }
+                    }
+                    TimerKind::PingreqRecv => {
+                        if let Some(handle) = pingreq_recv_timer.take() {
+                            handle.abort();
+                        }
+                    }
+                    TimerKind::PingrespRecv => {
+                        if let Some(handle) = pingresp_recv_timer.take() {
+                            handle.abort();
                         }
                     }
                 }
+            }
 
-                GenericEvent::RequestClose => {
-                    // Shutdown the stream - for most stream types, this means
-                    // dropping the stream or calling shutdown if available
-                    let _ = stream.shutdown().await;
-                    // Note: In a real implementation, we would signal the main loop to exit
-                }
+            GenericEvent::RequestClose => {
+                // Shutdown the stream - for most stream types, this means
+                // dropping the stream or calling shutdown if available
+                let _ = stream.shutdown().await;
+                // Note: In a real implementation, we would signal the main loop to exit
+            }
 
-                GenericEvent::NotifyError(_error) => {
-                    // Handle error - could log or trigger connection closure
-                    // For now, continue processing
-                }
+            GenericEvent::NotifyError(_error) => {
+                // Handle error - could log or trigger connection closure
+                // For now, continue processing
+            }
 
-                GenericEvent::NotifyPacketReceived(_packet) => {
-                    // This would be handled by a separate receive loop
-                    // in a full implementation
-                }
+            GenericEvent::NotifyPacketReceived(_packet) => {
+                // This should not happen in process_single_event
+                // NotifyPacketReceived is handled separately in process_events_with_recv
             }
         }
     }
