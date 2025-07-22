@@ -21,11 +21,11 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-use super::{TransportError, TransportOps, ClientConfig, ServerConfig};
+use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
 use std::io::IoSlice;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, TcpListener};
-use tokio::time::{timeout, Duration};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, timeout};
 
 #[derive(Debug)]
 pub struct TcpTransport {
@@ -41,12 +41,15 @@ impl TcpTransport {
         Self::connect_with_config(addr, &ClientConfig::default()).await
     }
 
-    pub async fn connect_with_config(addr: &str, config: &ClientConfig) -> Result<Self, TransportError> {
+    pub async fn connect_with_config(
+        addr: &str,
+        config: &ClientConfig,
+    ) -> Result<Self, TransportError> {
         let stream = timeout(config.connect_timeout, TcpStream::connect(addr))
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io)?;
-        
+
         Ok(Self::from_stream(stream))
     }
 
@@ -54,12 +57,15 @@ impl TcpTransport {
         Self::accept_with_config(listener, &ServerConfig::default()).await
     }
 
-    pub async fn accept_with_config(listener: &TcpListener, config: &ServerConfig) -> Result<Self, TransportError> {
+    pub async fn accept_with_config(
+        listener: &TcpListener,
+        config: &ServerConfig,
+    ) -> Result<Self, TransportError> {
         let (stream, _addr) = timeout(config.accept_timeout, listener.accept())
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io)?;
-        
+
         Ok(Self::from_stream(stream))
     }
 }
@@ -67,7 +73,10 @@ impl TcpTransport {
 impl TransportOps for TcpTransport {
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
         for buf in buffers {
-            self.stream.write_all(buf).await.map_err(TransportError::Io)?;
+            self.stream
+                .write_all(buf)
+                .await
+                .map_err(TransportError::Io)?;
         }
         Ok(())
     }

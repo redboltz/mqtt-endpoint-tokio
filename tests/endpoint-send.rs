@@ -1,3 +1,4 @@
+use mqtt_endpoint_tokio::mqtt_ep::endpoint::GenericEndpoint;
 /**
  * MIT License
  *
@@ -21,10 +22,8 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-
 use mqtt_protocol_core::mqtt;
 use mqtt_protocol_core::mqtt::prelude::*;
-use mqtt_endpoint_tokio::mqtt_ep::endpoint::GenericEndpoint;
 use tokio::io::duplex;
 
 #[tokio::test]

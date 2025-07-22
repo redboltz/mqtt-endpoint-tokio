@@ -21,13 +21,13 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-use super::{TransportError, TransportOps, ClientConfig, ServerConfig};
+use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
 use std::io::IoSlice;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpStream, TcpListener};
-use tokio::time::{timeout, Duration};
-use tokio_rustls::{TlsConnector, TlsAcceptor, rustls};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, timeout};
+use tokio_rustls::{TlsAcceptor, TlsConnector, rustls};
 
 trait TlsStream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin {}
 
@@ -46,11 +46,13 @@ impl std::fmt::Debug for TlsTransport {
 }
 
 impl TlsTransport {
-    pub fn from_stream<S>(stream: S) -> Self 
+    pub fn from_stream<S>(stream: S) -> Self
     where
         S: TlsStream + 'static,
     {
-        Self { stream: Box::new(stream) }
+        Self {
+            stream: Box::new(stream),
+        }
     }
 
     pub async fn connect(addr: &str, domain: &str) -> Result<Self, TransportError> {
@@ -58,10 +60,10 @@ impl TlsTransport {
     }
 
     pub async fn connect_with_config(
-        addr: &str, 
-        domain: &str, 
+        addr: &str,
+        domain: &str,
         config: &ClientConfig,
-        tls_config: Option<Arc<rustls::ClientConfig>>
+        tls_config: Option<Arc<rustls::ClientConfig>>,
     ) -> Result<Self, TransportError> {
         let tcp_stream = timeout(config.connect_timeout, TcpStream::connect(addr))
             .await
@@ -69,8 +71,8 @@ impl TlsTransport {
             .map_err(TransportError::Io)?;
 
         let tls_config = tls_config.unwrap_or_else(|| {
-            use std::sync::Arc;
             use rustls::RootCertStore;
+            use std::sync::Arc;
             let mut root_store = RootCertStore::empty();
             for cert in rustls_native_certs::load_native_certs().unwrap_or_default() {
                 let _ = root_store.add(&rustls::Certificate(cert.0));
@@ -79,30 +81,36 @@ impl TlsTransport {
                 rustls::ClientConfig::builder()
                     .with_safe_defaults()
                     .with_root_certificates(root_store)
-                    .with_no_client_auth()
+                    .with_no_client_auth(),
             )
         });
 
         let connector = TlsConnector::from(tls_config);
-        let domain = rustls::ServerName::try_from(domain)
-            .map_err(|e| TransportError::Tls(Box::new(e)))?;
+        let domain =
+            rustls::ServerName::try_from(domain).map_err(|e| TransportError::Tls(Box::new(e)))?;
 
-        let tls_stream = timeout(config.connect_timeout, connector.connect(domain, tcp_stream))
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(|e| TransportError::Tls(Box::new(e)))?;
+        let tls_stream = timeout(
+            config.connect_timeout,
+            connector.connect(domain, tcp_stream),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout)?
+        .map_err(|e| TransportError::Tls(Box::new(e)))?;
 
         Ok(Self::from_stream(tls_stream))
     }
 
-    pub async fn accept(listener: &TcpListener, acceptor: Arc<TlsAcceptor>) -> Result<Self, TransportError> {
+    pub async fn accept(
+        listener: &TcpListener,
+        acceptor: Arc<TlsAcceptor>,
+    ) -> Result<Self, TransportError> {
         Self::accept_with_config(listener, acceptor, &ServerConfig::default()).await
     }
 
     pub async fn accept_with_config(
-        listener: &TcpListener, 
+        listener: &TcpListener,
         acceptor: Arc<TlsAcceptor>,
-        config: &ServerConfig
+        config: &ServerConfig,
     ) -> Result<Self, TransportError> {
         let (tcp_stream, _addr) = timeout(config.accept_timeout, listener.accept())
             .await
@@ -121,7 +129,10 @@ impl TlsTransport {
 impl TransportOps for TlsTransport {
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
         for buf in buffers {
-            self.stream.write_all(buf).await.map_err(TransportError::Io)?;
+            self.stream
+                .write_all(buf)
+                .await
+                .map_err(TransportError::Io)?;
         }
         Ok(())
     }

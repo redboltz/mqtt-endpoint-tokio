@@ -1,3 +1,4 @@
+use serde::Serialize;
 /**
  * MIT License
  *
@@ -23,17 +24,16 @@
  */
 use std::marker::PhantomData;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
-use serde::Serialize;
 
-use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
-use mqtt_protocol_core::mqtt::connection::role::RoleType;
-use mqtt_protocol_core::mqtt::connection::event::TimerKind;
-use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
 use mqtt_protocol_core::mqtt::Version;
+use mqtt_protocol_core::mqtt::connection::event::TimerKind;
+use mqtt_protocol_core::mqtt::connection::role::RoleType;
+use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::packet::GenericPacket;
+use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
 use mqtt_protocol_core::mqtt::types::IsPacketId;
 use std::hash::Hash;
 
@@ -97,7 +97,6 @@ where
     }
 }
 
-
 #[derive(Debug, Clone)]
 pub enum SendError {
     ChannelClosed,
@@ -117,9 +116,12 @@ where
         let (tx_send, mut rx_send) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let mut connection: GenericConnection<Role, PacketIdType> = GenericConnection::new(version);
+            let mut connection: GenericConnection<Role, PacketIdType> =
+                GenericConnection::new(version);
             let mut stream = stream;
-            let mut timers: Vec<(TimerKind, tokio::task::JoinHandle<()>)> = Vec::new();
+            let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
+            let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
+            let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
 
             loop {
@@ -133,7 +135,7 @@ where
                                     break; // Channel closed, endpoint dropped
                                 }
                                 // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
+                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                             }
                             Some(RequestResponse::Recv { response_tx }) => {
 
@@ -162,7 +164,7 @@ where
                                 let events = connection.release_packet_id(packet_id);
                                 let _ = response_tx.send(Ok(()));
                                 // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
+                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                             }
                             None => break, // Channel closed, endpoint dropped
                         }
@@ -171,18 +173,28 @@ where
                     // Handle timer expiration
                     timer_kind = timer_rx.recv() => {
                         if let Some(kind) = timer_kind {
-                            // Timer has fired - remove it from active timers
-                            timers.retain(|(timer_kind, _)| *timer_kind != kind);
+                            // Timer has fired - clear the corresponding timer
+                            match kind {
+                                TimerKind::PingreqSend => pingreq_send_timer = None,
+                                TimerKind::PingreqRecv => pingreq_recv_timer = None,
+                                TimerKind::PingrespRecv => pingresp_recv_timer = None,
+                            }
                             let events = connection.notify_timer_fired(kind);
                             // Process events recursively
-                            Self::process_events(&mut connection, &mut stream, &mut timers, &timer_tx, events).await;
+                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                         }
                     }
                 }
             }
 
             // Cancel all timers when event loop exits
-            for (_, handle) in timers {
+            if let Some(handle) = pingreq_send_timer {
+                handle.abort();
+            }
+            if let Some(handle) = pingreq_recv_timer {
+                handle.abort();
+            }
+            if let Some(handle) = pingresp_recv_timer {
                 handle.abort();
             }
         });
@@ -196,16 +208,20 @@ where
     async fn process_events<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
         stream: &mut S,
-        timers: &mut Vec<(TimerKind, tokio::task::JoinHandle<()>)>,
+        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
         events: Vec<GenericEvent<PacketIdType>>,
-    )
-    where
+    ) where
         S: AsyncWrite + Unpin,
     {
         for event in events {
             match event {
-                GenericEvent::RequestSendPacket { packet, release_packet_id_if_send_error } => {
+                GenericEvent::RequestSendPacket {
+                    packet,
+                    release_packet_id_if_send_error,
+                } => {
                     // Get buffers from packet
                     let buffers = packet.to_buffers();
                     let total_len = packet.size();
@@ -220,7 +236,7 @@ where
                                 // Partial write - treat as error for MQTT packet integrity
                                 Err(std::io::Error::new(
                                     std::io::ErrorKind::WriteZero,
-                                    format!("Partial write: {}/{} bytes", bytes_written, total_len)
+                                    format!("Partial write: {}/{} bytes", bytes_written, total_len),
                                 ))
                             }
                         }
@@ -235,7 +251,16 @@ where
                                 if let Some(packet_id) = release_packet_id_if_send_error {
                                     let release_events = connection.release_packet_id(packet_id);
                                     // Process sub-events using boxed future to avoid recursion limit
-                                    Box::pin(Self::process_events(connection, stream, timers, timer_tx, release_events)).await;
+                                    Box::pin(Self::process_events(
+                                        connection,
+                                        stream,
+                                        pingreq_send_timer,
+                                        pingreq_recv_timer,
+                                        pingresp_recv_timer,
+                                        timer_tx,
+                                        release_events,
+                                    ))
+                                    .await;
                                 }
                             }
                         }
@@ -244,7 +269,16 @@ where
                             if let Some(packet_id) = release_packet_id_if_send_error {
                                 let release_events = connection.release_packet_id(packet_id);
                                 // Process sub-events using boxed future to avoid recursion limit
-                                Box::pin(Self::process_events(connection, stream, timers, timer_tx, release_events)).await;
+                                Box::pin(Self::process_events(
+                                    connection,
+                                    stream,
+                                    pingreq_send_timer,
+                                    pingreq_recv_timer,
+                                    pingresp_recv_timer,
+                                    timer_tx,
+                                    release_events,
+                                ))
+                                .await;
                             }
                         }
                     }
@@ -255,26 +289,62 @@ where
                 }
 
                 GenericEvent::RequestTimerReset { kind, duration_ms } => {
-                    // Cancel existing timer if present
-                    if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
-                        let (_, handle) = timers.remove(pos);
-                        handle.abort();
+                    // Cancel existing timer if present and set new timer
+                    match kind {
+                        TimerKind::PingreqSend => {
+                            if let Some(handle) = pingreq_send_timer.take() {
+                                handle.abort();
+                            }
+                            let timer_tx_clone = timer_tx.clone();
+                            let handle = tokio::spawn(async move {
+                                sleep(Duration::from_millis(duration_ms)).await;
+                                let _ = timer_tx_clone.send(kind);
+                            });
+                            *pingreq_send_timer = Some(handle);
+                        }
+                        TimerKind::PingreqRecv => {
+                            if let Some(handle) = pingreq_recv_timer.take() {
+                                handle.abort();
+                            }
+                            let timer_tx_clone = timer_tx.clone();
+                            let handle = tokio::spawn(async move {
+                                sleep(Duration::from_millis(duration_ms)).await;
+                                let _ = timer_tx_clone.send(kind);
+                            });
+                            *pingreq_recv_timer = Some(handle);
+                        }
+                        TimerKind::PingrespRecv => {
+                            if let Some(handle) = pingresp_recv_timer.take() {
+                                handle.abort();
+                            }
+                            let timer_tx_clone = timer_tx.clone();
+                            let handle = tokio::spawn(async move {
+                                sleep(Duration::from_millis(duration_ms)).await;
+                                let _ = timer_tx_clone.send(kind);
+                            });
+                            *pingresp_recv_timer = Some(handle);
+                        }
                     }
-
-                    // Set new timer
-                    let timer_tx_clone = timer_tx.clone();
-                    let handle = tokio::spawn(async move {
-                        sleep(Duration::from_millis(duration_ms)).await;
-                        let _ = timer_tx_clone.send(kind);
-                    });
-                    timers.push((kind, handle));
                 }
 
                 GenericEvent::RequestTimerCancel(kind) => {
                     // Cancel timer if present
-                    if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
-                        let (_, handle) = timers.remove(pos);
-                        handle.abort();
+                    match kind {
+                        TimerKind::PingreqSend => {
+                            if let Some(handle) = pingreq_send_timer.take() {
+                                handle.abort();
+                            }
+                        }
+                        TimerKind::PingreqRecv => {
+                            if let Some(handle) = pingreq_recv_timer.take() {
+                                handle.abort();
+                            }
+                        }
+                        TimerKind::PingrespRecv => {
+                            if let Some(handle) = pingresp_recv_timer.take() {
+                                handle.abort();
+                            }
+                        }
                     }
                 }
 
@@ -316,25 +386,18 @@ where
             })
             .map_err(|_| SendError::ChannelClosed)?;
 
-        response_rx
-            .await
-            .map_err(|_| SendError::ChannelClosed)?
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
 
     pub async fn recv(&self) -> Result<GenericPacket<PacketIdType>, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
-            .send(RequestResponse::Recv {
-                response_tx,
-            })
+            .send(RequestResponse::Recv { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
-        response_rx
-            .await
-            .map_err(|_| SendError::ChannelClosed)?
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
-
 
     /// Acquire a unique packet ID
     pub async fn acquire_unique_packet_id(&self) -> Result<PacketIdType, SendError> {
@@ -344,9 +407,7 @@ where
             .send(RequestResponse::AcquirePacketId { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
-        response_rx
-            .await
-            .map_err(|_| SendError::ChannelClosed)?
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
 
     /// Register a packet ID as in use
@@ -354,12 +415,13 @@ where
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
-            .send(RequestResponse::RegisterPacketId { packet_id, response_tx })
+            .send(RequestResponse::RegisterPacketId {
+                packet_id,
+                response_tx,
+            })
             .map_err(|_| SendError::ChannelClosed)?;
 
-        response_rx
-            .await
-            .map_err(|_| SendError::ChannelClosed)?
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
 
     /// Release a packet ID
@@ -367,14 +429,14 @@ where
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
-            .send(RequestResponse::ReleasePacketId { packet_id, response_tx })
+            .send(RequestResponse::ReleasePacketId {
+                packet_id,
+                response_tx,
+            })
             .map_err(|_| SendError::ChannelClosed)?;
 
-        response_rx
-            .await
-            .map_err(|_| SendError::ChannelClosed)?
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
-
 }
 
 pub type Endpoint<Role> = GenericEndpoint<Role, u16>;

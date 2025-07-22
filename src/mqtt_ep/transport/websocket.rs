@@ -21,17 +21,16 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-use super::{TransportError, TransportOps, ClientConfig, ServerConfig};
+use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
 use std::io::IoSlice;
 use std::sync::Arc;
-use tokio::net::{TcpStream, TcpListener};
-use tokio::time::{timeout, Duration};
-use tokio_tungstenite::{
-    WebSocketStream, MaybeTlsStream, 
-    connect_async, accept_async,
-    tungstenite::{Message, Error as WsError}
-};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsAcceptor;
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream, accept_async, connect_async,
+    tungstenite::{Error as WsError, Message},
+};
 use url::Url;
 
 #[derive(Debug)]
@@ -52,7 +51,9 @@ impl WebSocketTransport {
         Self::Plain(WebSocketAdapter::new(ws))
     }
 
-    pub fn from_tls_stream(ws: WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>) -> Self {
+    pub fn from_tls_stream(
+        ws: WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>,
+    ) -> Self {
         Self::Tls(WebSocketAdapter::new(ws))
     }
 
@@ -60,9 +61,11 @@ impl WebSocketTransport {
         Self::connect_with_config(uri, &ClientConfig::default()).await
     }
 
-    pub async fn connect_with_config(uri: &str, config: &ClientConfig) -> Result<Self, TransportError> {
-        let url = Url::parse(uri)
-            .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
+    pub async fn connect_with_config(
+        uri: &str,
+        config: &ClientConfig,
+    ) -> Result<Self, TransportError> {
+        let url = Url::parse(uri).map_err(|e| TransportError::WebSocket(Box::new(e)))?;
 
         let (ws_stream, _response) = timeout(config.connect_timeout, connect_async(url))
             .await
@@ -76,31 +79,37 @@ impl WebSocketTransport {
         Self::accept_with_config(listener, &ServerConfig::default()).await
     }
 
-    pub async fn accept_with_config(listener: &TcpListener, config: &ServerConfig) -> Result<Self, TransportError> {
+    pub async fn accept_with_config(
+        listener: &TcpListener,
+        config: &ServerConfig,
+    ) -> Result<Self, TransportError> {
         let (tcp_stream, _addr) = timeout(config.accept_timeout, listener.accept())
             .await
             .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io)?;
 
-        let ws_stream = timeout(config.accept_timeout, accept_async(MaybeTlsStream::Plain(tcp_stream)))
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
+        let ws_stream = timeout(
+            config.accept_timeout,
+            accept_async(MaybeTlsStream::Plain(tcp_stream)),
+        )
+        .await
+        .map_err(|_| TransportError::Timeout)?
+        .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
 
         Ok(Self::Plain(WebSocketAdapter::new(ws_stream)))
     }
 
     pub async fn accept_tls(
-        listener: &TcpListener, 
-        tls_acceptor: Arc<TlsAcceptor>
+        listener: &TcpListener,
+        tls_acceptor: Arc<TlsAcceptor>,
     ) -> Result<Self, TransportError> {
         Self::accept_tls_with_config(listener, tls_acceptor, &ServerConfig::default()).await
     }
 
     pub async fn accept_tls_with_config(
-        listener: &TcpListener, 
+        listener: &TcpListener,
         tls_acceptor: Arc<TlsAcceptor>,
-        config: &ServerConfig
+        config: &ServerConfig,
     ) -> Result<Self, TransportError> {
         let (tcp_stream, _addr) = timeout(config.accept_timeout, listener.accept())
             .await
@@ -136,32 +145,26 @@ impl<S> WebSocketAdapter<S> {
     {
         if self.read_pos >= self.read_buffer.len() {
             use futures_util::StreamExt;
-            
+
             match self.ws.next().await {
                 Some(Ok(Message::Binary(data))) => {
                     self.read_buffer = data;
                     self.read_pos = 0;
                     Ok(())
                 }
-                Some(Ok(Message::Close(_))) => {
-                    Err(TransportError::WebSocket(Box::new(
-                        WsError::ConnectionClosed
-                    )))
-                }
+                Some(Ok(Message::Close(_))) => Err(TransportError::WebSocket(Box::new(
+                    WsError::ConnectionClosed,
+                ))),
                 Some(Ok(_)) => {
                     // Text messages are not expected for MQTT
                     Err(TransportError::WebSocket(Box::new(
-                        WsError::ConnectionClosed // 簡略化
+                        WsError::ConnectionClosed, // 簡略化
                     )))
                 }
-                Some(Err(e)) => {
-                    Err(TransportError::WebSocket(Box::new(e)))
-                }
-                None => {
-                    Err(TransportError::WebSocket(Box::new(
-                        WsError::ConnectionClosed
-                    )))
-                }
+                Some(Err(e)) => Err(TransportError::WebSocket(Box::new(e))),
+                None => Err(TransportError::WebSocket(Box::new(
+                    WsError::ConnectionClosed,
+                ))),
             }
         } else {
             Ok(())
@@ -177,16 +180,22 @@ impl TransportOps for WebSocketTransport {
         }
 
         let message = Message::Binary(combined);
-        
+
         match self {
             WebSocketTransport::Plain(adapter) => {
                 use futures_util::SinkExt;
-                adapter.ws.send(message).await
+                adapter
+                    .ws
+                    .send(message)
+                    .await
                     .map_err(|e| TransportError::WebSocket(Box::new(e)))
             }
             WebSocketTransport::Tls(adapter) => {
                 use futures_util::SinkExt;
-                adapter.ws.send(message).await
+                adapter
+                    .ws
+                    .send(message)
+                    .await
                     .map_err(|e| TransportError::WebSocket(Box::new(e)))
             }
         }
@@ -199,10 +208,10 @@ impl TransportOps for WebSocketTransport {
 
                 let available = adapter.read_buffer.len() - adapter.read_pos;
                 let to_copy = buffer.len().min(available);
-                
+
                 if to_copy > 0 {
                     buffer[..to_copy].copy_from_slice(
-                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy]
+                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
                     );
                     adapter.read_pos += to_copy;
                 }
@@ -214,10 +223,10 @@ impl TransportOps for WebSocketTransport {
 
                 let available = adapter.read_buffer.len() - adapter.read_pos;
                 let to_copy = buffer.len().min(available);
-                
+
                 if to_copy > 0 {
                     buffer[..to_copy].copy_from_slice(
-                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy]
+                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
                     );
                     adapter.read_pos += to_copy;
                 }
@@ -229,7 +238,7 @@ impl TransportOps for WebSocketTransport {
 
     async fn shutdown(&mut self, timeout_duration: Duration) -> Result<(), TransportError> {
         use futures_util::SinkExt;
-        
+
         timeout(timeout_duration, async {
             match self {
                 WebSocketTransport::Plain(adapter) => {

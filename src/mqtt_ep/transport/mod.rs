@@ -27,7 +27,7 @@ mod websocket;
 
 pub use tcp::TcpTransport;
 pub use tls::TlsTransport;
-pub use websocket::{WebSocketTransport, WebSocketAdapter};
+pub use websocket::{WebSocketAdapter, WebSocketTransport};
 
 use std::io::IoSlice;
 use tokio::time::Duration;
