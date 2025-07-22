@@ -24,5 +24,5 @@
 pub mod endpoint;
 pub mod transport;
 
-pub use endpoint::{Endpoint, GenericEndpoint, SendError};
+pub use endpoint::{Endpoint, GenericEndpoint, PacketFilter, SendError};
 pub use transport::{ClientConfig, ServerConfig, Transport, TransportError, TransportOps};

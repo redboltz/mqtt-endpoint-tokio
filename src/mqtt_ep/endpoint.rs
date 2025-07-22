@@ -33,10 +33,45 @@ use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::connection::event::TimerKind;
 use mqtt_protocol_core::mqtt::connection::role::RoleType;
 use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
-use mqtt_protocol_core::mqtt::packet::GenericPacket;
 use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
+use mqtt_protocol_core::mqtt::packet::{GenericPacket, PacketType};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
 use std::hash::Hash;
+
+/// Packet filter for selective receiving
+#[derive(Debug, Clone)]
+pub enum PacketFilter {
+    /// Accept packets of any of these types
+    Include(Vec<PacketType>),
+    /// Reject packets of any of these types (accept all others)
+    Exclude(Vec<PacketType>),
+    /// Accept all packets (no filtering)
+    Any,
+}
+
+impl PacketFilter {
+    /// Check if a packet matches this filter
+    pub fn matches<PacketIdType>(&self, packet: &GenericPacket<PacketIdType>) -> bool
+    where
+        PacketIdType: IsPacketId + Serialize,
+    {
+        match self {
+            PacketFilter::Include(types) => types.contains(&packet.packet_type()),
+            PacketFilter::Exclude(types) => !types.contains(&packet.packet_type()),
+            PacketFilter::Any => true,
+        }
+    }
+
+    /// Create an include filter for specific packet types
+    pub fn include(types: impl Into<Vec<PacketType>>) -> Self {
+        PacketFilter::Include(types.into())
+    }
+
+    /// Create an exclude filter for specific packet types
+    pub fn exclude(types: impl Into<Vec<PacketType>>) -> Self {
+        PacketFilter::Exclude(types.into())
+    }
+}
 
 pub struct GenericEndpoint<Role, PacketIdType>
 where
@@ -57,6 +92,7 @@ where
         response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
     },
     Recv {
+        filter: PacketFilter,
         response_tx: oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
     },
     AcquirePacketId {
@@ -140,8 +176,8 @@ where
                                 // Process events recursively
                                 Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                             }
-                            Some(RequestResponse::Recv { response_tx }) => {
-                                // Read until we get at least one event (complete packet)
+                            Some(RequestResponse::Recv { filter, response_tx }) => {
+                                // Read until we get a packet matching the filter
                                 loop {
                                     match stream.read(&mut read_buffer).await {
                                         Ok(0) => {
@@ -162,8 +198,14 @@ where
                                                 let received_packet = Self::process_events_with_recv(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
 
                                                 if let Some(packet) = received_packet {
-                                                    let _ = response_tx.send(Ok(packet));
-                                                    break;
+                                                    // Check if packet matches the filter
+                                                    if filter.matches(&packet) {
+                                                        let _ = response_tx.send(Ok(packet));
+                                                        break;
+                                                    } else {
+                                                        // Packet doesn't match filter - discard and continue reading
+                                                        continue;
+                                                    }
                                                 } else {
                                                     // No packet received in this batch - continue reading
                                                     continue;
@@ -490,11 +532,23 @@ where
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
 
+    /// Receive any MQTT packet
     pub async fn recv(&self) -> Result<GenericPacket<PacketIdType>, SendError> {
+        self.recv_filtered(PacketFilter::Any).await
+    }
+
+    /// Receive MQTT packet matching the specified filter
+    pub async fn recv_filtered(
+        &self,
+        filter: PacketFilter,
+    ) -> Result<GenericPacket<PacketIdType>, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
-            .send(RequestResponse::Recv { response_tx })
+            .send(RequestResponse::Recv {
+                filter,
+                response_tx,
+            })
             .map_err(|_| SendError::ChannelClosed)?;
 
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
