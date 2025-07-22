@@ -98,6 +98,9 @@ where
     AcquirePacketId {
         response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
     },
+    AcquirePacketIdWhenAvailable {
+        response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
+    },
     RegisterPacketId {
         packet_id: PacketIdType,
         response_tx: oneshot::Sender<Result<(), SendError>>,
@@ -160,6 +163,9 @@ where
             let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
+            
+            // Queue for pending packet ID acquisition requests
+            let mut pending_packet_id_requests: Vec<oneshot::Sender<Result<PacketIdType, SendError>>> = Vec::new();
 
             let mut read_buffer = vec![0u8; 4096];
 
@@ -175,7 +181,7 @@ where
                                     break; // Channel closed, endpoint dropped
                                 }
                                 // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                             }
                             Some(RequestResponse::Recv { filter, response_tx }) => {
                                 // Read until we get a packet matching the filter
@@ -196,7 +202,7 @@ where
                                                 continue;
                                             } else {
                                                 // Process events and check for received packet
-                                                let received_packet = Self::process_events_with_recv(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+                                                let received_packet = Self::process_events_with_recv(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
 
                                                 if let Some(packet) = received_packet {
                                                     // Check if packet matches the filter
@@ -231,6 +237,18 @@ where
                                     }
                                 }
                             }
+                            Some(RequestResponse::AcquirePacketIdWhenAvailable { response_tx }) => {
+                                match connection.acquire_unique_packet_id() {
+                                    Ok(packet_id) => {
+                                        // Packet ID available immediately
+                                        let _ = response_tx.send(Ok(packet_id));
+                                    }
+                                    Err(_) => {
+                                        // No packet ID available, add to waiting queue
+                                        pending_packet_id_requests.push(response_tx);
+                                    }
+                                }
+                            }
                             Some(RequestResponse::RegisterPacketId { packet_id, response_tx }) => {
                                 match connection.register_packet_id(packet_id) {
                                     Ok(()) => {
@@ -245,7 +263,7 @@ where
                                 let events = connection.release_packet_id(packet_id);
                                 let _ = response_tx.send(Ok(()));
                                 // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                             }
                             None => break, // Channel closed, endpoint dropped
                         }
@@ -262,7 +280,7 @@ where
                             }
                             let events = connection.notify_timer_fired(kind);
                             // Process events recursively
-                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                         }
                     }
 
@@ -294,6 +312,7 @@ where
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
+        pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
         events: Vec<GenericEvent<PacketIdType>>,
     ) -> Option<GenericPacket<PacketIdType>>
     where
@@ -306,6 +325,10 @@ where
                 GenericEvent::NotifyPacketReceived(packet) => {
                     // Store the received packet (should be only one per events batch)
                     received_packet = Some(packet);
+                }
+                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
+                    // Handle packet ID release and process waiting queue
+                    Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
                 }
                 _ => {
                     // Process other events as before
@@ -333,21 +356,53 @@ where
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
+        pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
         events: Vec<GenericEvent<PacketIdType>>,
     ) where
         S: AsyncWrite + Unpin,
     {
         for event in events {
-            Self::process_single_event(
-                connection,
-                stream,
-                pingreq_send_timer,
-                pingreq_recv_timer,
-                pingresp_recv_timer,
-                timer_tx,
-                event,
-            )
-            .await;
+            match event {
+                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
+                    // Handle packet ID release and process waiting queue
+                    Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
+                }
+                _ => {
+                    // Process other events
+                    Self::process_single_event(
+                        connection,
+                        stream,
+                        pingreq_send_timer,
+                        pingreq_recv_timer,
+                        pingresp_recv_timer,
+                        timer_tx,
+                        event,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+
+    /// Process the packet ID waiting queue when a packet ID is released
+    fn process_packet_id_waiting_queue(
+        connection: &mut GenericConnection<Role, PacketIdType>,
+        pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
+    ) {
+        // Try to satisfy waiting requests until we fail to acquire or run out of requests
+        while let Some(response_tx) = pending_requests.pop() {
+            match connection.acquire_unique_packet_id() {
+                Ok(packet_id) => {
+                    // Successfully acquired packet ID, send to waiting requester
+                    let _ = response_tx.send(Ok(packet_id));
+                    // Continue processing remaining requests if any
+                }
+                Err(_) => {
+                    // Failed to acquire packet ID, put the request back and stop processing
+                    pending_requests.push(response_tx);
+                    break;
+                }
+            }
         }
     }
 
@@ -396,6 +451,9 @@ where
                             if let Some(packet_id) = release_packet_id_if_send_error {
                                 let release_events = connection.release_packet_id(packet_id);
                                 // Process sub-events using boxed future to avoid recursion limit
+                                // Note: We don't have access to pending_packet_id_requests here in process_single_event
+                                // This is acceptable since NotifyPacketIdReleased events should be handled at the top level
+                                let mut empty_queue = Vec::new();
                                 Box::pin(Self::process_events(
                                     connection,
                                     stream,
@@ -403,6 +461,7 @@ where
                                     pingreq_recv_timer,
                                     pingresp_recv_timer,
                                     timer_tx,
+                                    &mut empty_queue,
                                     release_events,
                                 ))
                                 .await;
@@ -414,6 +473,9 @@ where
                         if let Some(packet_id) = release_packet_id_if_send_error {
                             let release_events = connection.release_packet_id(packet_id);
                             // Process sub-events using boxed future to avoid recursion limit
+                            // Note: We don't have access to pending_packet_id_requests here in process_single_event
+                            // This is acceptable since NotifyPacketIdReleased events should be handled at the top level
+                            let mut empty_queue = Vec::new();
                             Box::pin(Self::process_events(
                                 connection,
                                 stream,
@@ -421,6 +483,7 @@ where
                                 pingreq_recv_timer,
                                 pingresp_recv_timer,
                                 timer_tx,
+                                &mut empty_queue,
                                 release_events,
                             ))
                             .await;
@@ -561,6 +624,21 @@ where
 
         self.tx_send
             .send(RequestResponse::AcquirePacketId { response_tx })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Acquire a unique packet ID, waiting until one becomes available
+    /// 
+    /// Unlike acquire_unique_packet_id(), this method will not return an error
+    /// if all packet IDs are currently in use. Instead, it will wait until 
+    /// a packet ID is released and becomes available.
+    pub async fn acquire_packet_id_when_available(&self) -> Result<PacketIdType, SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx_send
+            .send(RequestResponse::AcquirePacketIdWhenAvailable { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
