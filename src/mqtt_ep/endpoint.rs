@@ -107,18 +107,18 @@ where
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
     <PacketIdType as IsPacketId>::Buffer: Send,
 {
-    pub fn new<S>(version: Version, stream: S) -> Self 
+    pub fn new<S>(version: Version, stream: S) -> Self
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let (tx_send, mut rx_send) = mpsc::unbounded_channel();
-        
+
         tokio::spawn(async move {
             let mut connection: GenericConnection<Role, PacketIdType> = GenericConnection::new(version);
             let mut stream = stream;
             let mut timers: Vec<(TimerKind, tokio::task::JoinHandle<()>)> = Vec::new();
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
-            
+
             loop {
                 tokio::select! {
                     // Handle requests from external API
@@ -161,7 +161,7 @@ where
                             None => break, // Channel closed, endpoint dropped
                         }
                     }
-                    
+
                     // Handle timer expiration
                     timer_kind = timer_rx.recv() => {
                         if let Some(kind) = timer_kind {
@@ -174,7 +174,7 @@ where
                     }
                 }
             }
-            
+
             // Cancel all timers when event loop exits
             for (_, handle) in timers {
                 handle.abort();
@@ -193,7 +193,7 @@ where
         timers: &mut Vec<(TimerKind, tokio::task::JoinHandle<()>)>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
         events: Vec<GenericEvent<PacketIdType>>,
-    ) 
+    )
     where
         S: AsyncWrite + Unpin,
     {
@@ -202,25 +202,25 @@ where
                 GenericEvent::RequestSendPacket { packet, release_packet_id_if_send_error } => {
                     // Get buffers from packet
                     let buffers = packet.to_buffers();
-                    
+                    let total_len = packet.size();
+
                     // Send using vectored I/O
                     let send_result = match stream.write_vectored(&buffers).await {
                         Ok(bytes_written) => {
                             // Verify all data was written
-                            let total_len: usize = buffers.iter().map(|b| b.len()).sum();
                             if bytes_written == total_len {
                                 Ok(())
                             } else {
                                 // Partial write - treat as error for MQTT packet integrity
                                 Err(std::io::Error::new(
-                                    std::io::ErrorKind::WriteZero, 
+                                    std::io::ErrorKind::WriteZero,
                                     format!("Partial write: {}/{} bytes", bytes_written, total_len)
                                 ))
                             }
                         }
                         Err(e) => Err(e),
                     };
-                    
+
                     match send_result {
                         Ok(_) => {
                             // Successfully sent, flush the stream
@@ -243,18 +243,18 @@ where
                         }
                     }
                 }
-                
+
                 GenericEvent::NotifyPacketIdReleased(_packet_id) => {
                     // Currently do nothing as specified
                 }
-                
+
                 GenericEvent::RequestTimerReset { kind, duration_ms } => {
                     // Cancel existing timer if present
                     if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
                         let (_, handle) = timers.remove(pos);
                         handle.abort();
                     }
-                    
+
                     // Set new timer
                     let timer_tx_clone = timer_tx.clone();
                     let handle = tokio::spawn(async move {
@@ -263,7 +263,7 @@ where
                     });
                     timers.push((kind, handle));
                 }
-                
+
                 GenericEvent::RequestTimerCancel(kind) => {
                     // Cancel timer if present
                     if let Some(pos) = timers.iter().position(|(timer_kind, _)| *timer_kind == kind) {
@@ -271,19 +271,19 @@ where
                         handle.abort();
                     }
                 }
-                
+
                 GenericEvent::RequestClose => {
                     // Shutdown the stream - for most stream types, this means
                     // dropping the stream or calling shutdown if available
                     let _ = stream.shutdown().await;
                     // Note: In a real implementation, we would signal the main loop to exit
                 }
-                
+
                 GenericEvent::NotifyError(_error) => {
                     // Handle error - could log or trigger connection closure
                     // For now, continue processing
                 }
-                
+
                 GenericEvent::NotifyPacketReceived(_packet) => {
                     // This would be handled by a separate receive loop
                     // in a full implementation
@@ -294,7 +294,7 @@ where
 
     /// Send MQTT packet with compile-time type safety
     ///
-    /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>` 
+    /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>`
     /// for compile-time verification, or `GenericPacket<PacketIdType>` for dynamic cases.
     /// All packets are converted to GenericPacket internally via the Into trait.
     pub async fn send<T>(&self, packet: T) -> Result<Vec<GenericEvent<PacketIdType>>, SendError>
@@ -302,7 +302,7 @@ where
         T: Into<GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
     {
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         self.tx_send
             .send(RequestResponse::Sendable {
                 packet: Box::new(packet),
@@ -318,7 +318,7 @@ where
     /// Acquire a unique packet ID
     pub async fn acquire_unique_packet_id(&self) -> Result<PacketIdType, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         self.tx_send
             .send(RequestResponse::AcquirePacketId { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
@@ -331,7 +331,7 @@ where
     /// Register a packet ID as in use
     pub async fn register_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         self.tx_send
             .send(RequestResponse::RegisterPacketId { packet_id, response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
@@ -344,7 +344,7 @@ where
     /// Release a packet ID
     pub async fn release_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
         let (response_tx, response_rx) = oneshot::channel();
-        
+
         self.tx_send
             .send(RequestResponse::ReleasePacketId { packet_id, response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
