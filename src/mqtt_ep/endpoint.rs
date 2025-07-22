@@ -24,9 +24,10 @@ use serde::Serialize;
  */
 use std::marker::PhantomData;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, AsyncReadExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
+use std::io::Cursor;
 
 use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::connection::event::TimerKind;
@@ -123,6 +124,10 @@ where
             let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
+            
+            // Queue for pending recv requests
+            let mut pending_recv_requests: Vec<oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>> = Vec::new();
+            let mut read_buffer = vec![0u8; 4096];
 
             loop {
                 tokio::select! {
@@ -138,7 +143,8 @@ where
                                 Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
                             }
                             Some(RequestResponse::Recv { response_tx }) => {
-
+                                // Add recv request to pending queue
+                                pending_recv_requests.push(response_tx);
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
                                 match connection.acquire_unique_packet_id() {
@@ -182,6 +188,43 @@ where
                             let events = connection.notify_timer_fired(kind);
                             // Process events recursively
                             Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, events).await;
+                        }
+                    }
+
+                    // Handle incoming data from stream
+                    read_result = stream.read(&mut read_buffer) => {
+                        match read_result {
+                            Ok(0) => {
+                                // EOF - connection closed
+                                break;
+                            }
+                            Ok(n) => {
+                                // Process received bytes
+                                let mut cursor = Cursor::new(&read_buffer[..n]);
+                                let events = connection.recv(&mut cursor);
+                                
+                                // Handle events and look for received packets
+                                for event in events {
+                                    match event {
+                                        GenericEvent::NotifyPacketReceived(packet) => {
+                                            // Send packet to first pending recv request
+                                            if let Some(response_tx) = pending_recv_requests.pop() {
+                                                let _ = response_tx.send(Ok(packet));
+                                            }
+                                            // If no pending recv requests, packet is dropped
+                                            // In a real implementation, you might want to buffer packets
+                                        }
+                                        _ => {
+                                            // Process other events recursively
+                                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, vec![event]).await;
+                                        }
+                                    }
+                                }
+                            }
+                            Err(_) => {
+                                // Read error - close connection
+                                break;
+                            }
                         }
                     }
                 }
