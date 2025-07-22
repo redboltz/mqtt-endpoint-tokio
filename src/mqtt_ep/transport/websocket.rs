@@ -254,7 +254,8 @@ impl TransportOps for WebSocketTransport {
                 }
             }
             Ok::<(), WsError>(())
-        }).await;
+        })
+        .await;
 
         // If graceful shutdown fails or times out, force close the connection
         match graceful_result {

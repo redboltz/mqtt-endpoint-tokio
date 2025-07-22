@@ -54,7 +54,7 @@ async fn test_restore_packets_api_compilation() {
 #[tokio::test]
 async fn test_restore_packets_with_different_roles() {
     // Test restore_packets method with different roles
-    
+
     // Test with Server role
     {
         let (stream, _) = tokio::io::duplex(1024);
@@ -64,7 +64,7 @@ async fn test_restore_packets_with_different_roles() {
         let _result = endpoint.restore_packets(packets).await;
     }
 
-    // Test with Any role  
+    // Test with Any role
     {
         let (stream, _) = tokio::io::duplex(1024);
         let endpoint: GenericEndpoint<role::Any, u16> =
@@ -120,7 +120,7 @@ async fn test_multiple_restore_packets_calls() {
     let result1 = endpoint.restore_packets(packets1).await;
     println!("First restore_packets result: {:?}", result1);
 
-    let packets2: Vec<GenericStorePacket<u16>> = Vec::new();  
+    let packets2: Vec<GenericStorePacket<u16>> = Vec::new();
     let result2 = endpoint.restore_packets(packets2).await;
     println!("Second restore_packets result: {:?}", result2);
 

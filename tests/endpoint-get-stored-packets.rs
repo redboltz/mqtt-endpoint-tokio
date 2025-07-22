@@ -40,7 +40,10 @@ async fn test_get_stored_packets_api_compilation() {
     // The method should complete successfully
     match result {
         Ok(packets) => {
-            println!("get_stored_packets completed successfully, got {} packets", packets.len());
+            println!(
+                "get_stored_packets completed successfully, got {} packets",
+                packets.len()
+            );
             // Should be empty initially as no packets have been stored
             assert_eq!(packets.len(), 0);
         }
@@ -53,7 +56,7 @@ async fn test_get_stored_packets_api_compilation() {
 #[tokio::test]
 async fn test_get_stored_packets_with_different_roles() {
     // Test get_stored_packets method with different roles
-    
+
     // Test with Server role
     {
         let (stream, _) = tokio::io::duplex(1024);
@@ -63,7 +66,7 @@ async fn test_get_stored_packets_with_different_roles() {
         assert!(result.is_ok());
     }
 
-    // Test with Any role  
+    // Test with Any role
     {
         let (stream, _) = tokio::io::duplex(1024);
         let endpoint: GenericEndpoint<role::Any, u16> =

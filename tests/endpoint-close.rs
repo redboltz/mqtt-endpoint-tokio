@@ -50,7 +50,7 @@ async fn test_close_api_compilation() {
 #[tokio::test]
 async fn test_close_with_different_roles() {
     // Test close method with different roles
-    
+
     // Test with Server role
     {
         let (stream, _) = tokio::io::duplex(1024);
@@ -59,7 +59,7 @@ async fn test_close_with_different_roles() {
         let _result = endpoint.close().await;
     }
 
-    // Test with Any role  
+    // Test with Any role
     {
         let (stream, _) = tokio::io::duplex(1024);
         let endpoint: GenericEndpoint<role::Any, u16> =
@@ -87,11 +87,16 @@ async fn test_operations_after_close() {
     println!("Close result: {:?}", close_result);
 
     // Try to use the endpoint after close - should fail with ChannelClosed
-    let send_result = endpoint.send(mqtt_protocol_core::mqtt::packet::v3_1_1::Pingreq::new()).await;
+    let send_result = endpoint
+        .send(mqtt_protocol_core::mqtt::packet::v3_1_1::Pingreq::new())
+        .await;
     println!("Send after close result: {:?}", send_result);
 
     let packet_id_result = endpoint.acquire_packet_id().await;
-    println!("Acquire packet ID after close result: {:?}", packet_id_result);
+    println!(
+        "Acquire packet ID after close result: {:?}",
+        packet_id_result
+    );
 
     // All operations after close should return ChannelClosed error
     match send_result {

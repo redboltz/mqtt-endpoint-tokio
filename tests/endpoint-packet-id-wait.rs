@@ -41,7 +41,8 @@ async fn test_packet_id_when_available_api_compilation() {
     let result = timeout(
         Duration::from_millis(50),
         endpoint.acquire_packet_id_when_available(),
-    ).await;
+    )
+    .await;
 
     // The test is primarily about compilation, result can vary
     // Most importantly, the API exists and compiles correctly
@@ -69,6 +70,8 @@ async fn test_acquire_unique_vs_when_available_api() {
 
     // Test that they both return similar result types (compilation test)
     // Both should return Result<u16, SendError>
-    let _: std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>> = Box::pin(_immediate_future);
-    let _: std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>> = Box::pin(_waiting_future);
+    let _: std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>> =
+        Box::pin(_immediate_future);
+    let _: std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>> =
+        Box::pin(_waiting_future);
 }

@@ -34,6 +34,7 @@ use mqtt_protocol_core::mqtt::connection::event::TimerKind;
 use mqtt_protocol_core::mqtt::connection::role::RoleType;
 use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
+use mqtt_protocol_core::mqtt::packet::v5_0;
 use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket, PacketType};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
 use std::hash::Hash;
@@ -119,6 +120,10 @@ where
     GetStoredPackets {
         response_tx: oneshot::Sender<Result<Vec<GenericStorePacket<PacketIdType>>, SendError>>,
     },
+    RegulateForStore {
+        packet: v5_0::GenericPublish<PacketIdType>,
+        response_tx: oneshot::Sender<Result<v5_0::GenericPublish<PacketIdType>, SendError>>,
+    },
 }
 
 /// Type-erased trait for sending Sendable packets through channels
@@ -175,7 +180,9 @@ where
             let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
 
             // Queue for pending packet ID acquisition requests
-            let mut pending_packet_id_requests: Vec<oneshot::Sender<Result<PacketIdType, SendError>>> = Vec::new();
+            let mut pending_packet_id_requests: Vec<
+                oneshot::Sender<Result<PacketIdType, SendError>>,
+            > = Vec::new();
 
             let mut read_buffer = vec![0u8; 4096];
 
@@ -306,6 +313,17 @@ where
                                 let stored_packets = connection.get_stored_packets();
                                 // Send packets back to caller
                                 let _ = response_tx.send(Ok(stored_packets));
+                            }
+                            Some(RequestResponse::RegulateForStore { packet, response_tx }) => {
+                                // Note: regulate_for_store() returns Result<v5_0::GenericPublish<PacketIdType>, MqttError>, no events to process
+                                match connection.regulate_for_store(packet) {
+                                    Ok(regulated_packet) => {
+                                        let _ = response_tx.send(Ok(regulated_packet));
+                                    }
+                                    Err(mqtt_error) => {
+                                        let _ = response_tx.send(Err(SendError::ConnectionError(mqtt_error.to_string())));
+                                    }
+                                }
                             }
                             None => break, // Channel closed, endpoint dropped
                         }
@@ -736,7 +754,10 @@ where
     /// This method allows restoring previously stored packets back to the connection.
     /// This is typically used during session restoration to recover in-flight QoS 1 and QoS 2 packets.
     /// The packets will be restored to the appropriate internal tracking structures based on their type and QoS level.
-    pub async fn restore_packets(&self, packets: Vec<GenericStorePacket<PacketIdType>>) -> Result<(), SendError> {
+    pub async fn restore_packets(
+        &self,
+        packets: Vec<GenericStorePacket<PacketIdType>>,
+    ) -> Result<(), SendError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
@@ -750,15 +771,39 @@ where
     }
 
     /// Get all stored packets from the connection store
-    /// 
+    ///
     /// This method retrieves all currently stored packets from the connection.
     /// This is typically used for session persistence to save in-flight QoS 1 and QoS 2 packets
     /// before closing the connection, so they can be restored later with restore_packets().
-    pub async fn get_stored_packets(&self) -> Result<Vec<GenericStorePacket<PacketIdType>>, SendError> {
+    pub async fn get_stored_packets(
+        &self,
+    ) -> Result<Vec<GenericStorePacket<PacketIdType>>, SendError> {
         let (response_tx, response_rx) = oneshot::channel();
 
         self.tx_send
             .send(RequestResponse::GetStoredPackets { response_tx })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Regulate MQTT v5.0 PUBLISH packet for storage
+    ///
+    /// This method processes an MQTT v5.0 PUBLISH packet to make it suitable for storage.
+    /// It resolves topic aliases to actual topic names and removes topic alias properties,
+    /// ensuring the packet can be stored and restored correctly during session persistence.
+    /// This is typically used before storing QoS 1 and QoS 2 packets that use topic aliases.
+    pub async fn regulate_for_store(
+        &self,
+        packet: v5_0::GenericPublish<PacketIdType>,
+    ) -> Result<v5_0::GenericPublish<PacketIdType>, SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx_send
+            .send(RequestResponse::RegulateForStore {
+                packet,
+                response_tx,
+            })
             .map_err(|_| SendError::ChannelClosed)?;
 
         response_rx.await.map_err(|_| SendError::ChannelClosed)?

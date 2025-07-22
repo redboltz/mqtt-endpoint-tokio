@@ -88,7 +88,7 @@ impl TransportOps for TcpTransport {
     async fn shutdown(&mut self, timeout_duration: Duration) {
         // Try graceful shutdown first with timeout
         let graceful_result = timeout(timeout_duration, self.stream.shutdown()).await;
-        
+
         // If graceful shutdown fails or times out, force close the connection
         match graceful_result {
             Ok(Ok(())) => {
