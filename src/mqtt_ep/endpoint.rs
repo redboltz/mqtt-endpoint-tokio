@@ -89,7 +89,7 @@ where
 {
     Send {
         packet: Box<dyn SendableErased<Role, PacketIdType>>,
-        response_tx: oneshot::Sender<Result<Vec<GenericEvent<PacketIdType>>, SendError>>,
+        response_tx: oneshot::Sender<Result<(), SendError>>,
     },
     Recv {
         filter: PacketFilter,
@@ -170,7 +170,8 @@ where
                         match request {
                             Some(RequestResponse::Send { packet, response_tx }) => {
                                 let events = packet.dispatch_send_boxed(&mut connection);
-                                if let Err(_) = response_tx.send(Ok(events.clone())) {
+                                // Send success response immediately
+                                if let Err(_) = response_tx.send(Ok(())) {
                                     break; // Channel closed, endpoint dropped
                                 }
                                 // Process events recursively
@@ -516,7 +517,7 @@ where
     /// This method accepts any packet type that implements `Sendable<Role, PacketIdType>`
     /// for compile-time verification, or `GenericPacket<PacketIdType>` for dynamic cases.
     /// All packets are converted to GenericPacket internally via the Into trait.
-    pub async fn send<T>(&self, packet: T) -> Result<Vec<GenericEvent<PacketIdType>>, SendError>
+    pub async fn send<T>(&self, packet: T) -> Result<(), SendError>
     where
         T: Into<GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
     {
