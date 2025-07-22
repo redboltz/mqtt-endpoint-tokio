@@ -389,17 +389,16 @@ where
         connection: &mut GenericConnection<Role, PacketIdType>,
         pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
     ) {
-        // Try to satisfy waiting requests until we fail to acquire or run out of requests
-        while let Some(response_tx) = pending_requests.pop() {
+        // Process requests from the front (index 0) to maintain FIFO order
+        while !pending_requests.is_empty() {
             match connection.acquire_unique_packet_id() {
                 Ok(packet_id) => {
-                    // Successfully acquired packet ID, send to waiting requester
+                    // Successfully acquired packet ID, remove and send to the first waiting requester
+                    let response_tx = pending_requests.remove(0);
                     let _ = response_tx.send(Ok(packet_id));
-                    // Continue processing remaining requests if any
                 }
                 Err(_) => {
-                    // Failed to acquire packet ID, put the request back and stop processing
-                    pending_requests.push(response_tx);
+                    // Failed to acquire packet ID, stop processing to maintain order
                     break;
                 }
             }
