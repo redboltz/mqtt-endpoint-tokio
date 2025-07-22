@@ -34,7 +34,7 @@ use mqtt_protocol_core::mqtt::connection::event::TimerKind;
 use mqtt_protocol_core::mqtt::connection::role::RoleType;
 use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
-use mqtt_protocol_core::mqtt::packet::{GenericPacket, PacketType};
+use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket, PacketType};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
 use std::hash::Hash;
 
@@ -111,6 +111,13 @@ where
     },
     Close {
         response_tx: oneshot::Sender<Result<(), SendError>>,
+    },
+    RestorePackets {
+        packets: Vec<GenericStorePacket<PacketIdType>>,
+        response_tx: oneshot::Sender<Result<(), SendError>>,
+    },
+    GetStoredPackets {
+        response_tx: oneshot::Sender<Result<Vec<GenericStorePacket<PacketIdType>>, SendError>>,
     },
 }
 
@@ -198,6 +205,7 @@ where
                                         Ok(n) => {
                                             // Process received bytes
                                             let mut cursor = Cursor::new(&read_buffer[..n]);
+                                            // Note: recv() returns Vec<GenericEvent<PacketIdType>>, process events
                                             let events = connection.recv(&mut cursor);
 
                                             if events.is_empty() {
@@ -231,6 +239,7 @@ where
                                 }
                             }
                             Some(RequestResponse::AcquirePacketId { response_tx }) => {
+                                // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
                                 match connection.acquire_packet_id() {
                                     Ok(packet_id) => {
                                         let _ = response_tx.send(Ok(packet_id));
@@ -241,6 +250,7 @@ where
                                 }
                             }
                             Some(RequestResponse::AcquirePacketIdWhenAvailable { response_tx }) => {
+                                // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
                                 match connection.acquire_packet_id() {
                                     Ok(packet_id) => {
                                         // Packet ID available immediately
@@ -253,6 +263,7 @@ where
                                 }
                             }
                             Some(RequestResponse::RegisterPacketId { packet_id, response_tx }) => {
+                                // Note: register_packet_id() returns Result<(), MqttError>, no events
                                 match connection.register_packet_id(packet_id) {
                                     Ok(()) => {
                                         let _ = response_tx.send(Ok(()));
@@ -263,6 +274,7 @@ where
                                 }
                             }
                             Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
+                                // Note: release_packet_id() returns Vec<GenericEvent<PacketIdType>>, process events
                                 let events = connection.release_packet_id(packet_id);
                                 let _ = response_tx.send(Ok(()));
                                 // Process events recursively
@@ -271,16 +283,29 @@ where
                             Some(RequestResponse::Close { response_tx }) => {
                                 // Shutdown the stream first - ignore errors as we want to force close if needed
                                 let _ = stream.shutdown().await;
-                                
-                                // Notify connection that it's being closed
+
+                                // Note: notify_closed() returns Vec<GenericEvent<PacketIdType>>, process events
                                 let events = connection.notify_closed();
                                 // Send success response immediately
                                 let _ = response_tx.send(Ok(()));
                                 // Process the close events
                                 Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                                
+
                                 // Break out of the event loop after close
                                 break;
+                            }
+                            Some(RequestResponse::RestorePackets { packets, response_tx }) => {
+                                // Note: restore_packets() currently returns (), no events to process
+                                connection.restore_packets(packets);
+
+                                // Send success response
+                                let _ = response_tx.send(Ok(()));
+                            }
+                            Some(RequestResponse::GetStoredPackets { response_tx }) => {
+                                // Note: get_stored_packets() returns Vec<GenericStorePacket<PacketIdType>>, no events to process
+                                let stored_packets = connection.get_stored_packets();
+                                // Send packets back to caller
+                                let _ = response_tx.send(Ok(stored_packets));
                             }
                             None => break, // Channel closed, endpoint dropped
                         }
@@ -295,6 +320,7 @@ where
                                 TimerKind::PingreqRecv => pingreq_recv_timer = None,
                                 TimerKind::PingrespRecv => pingresp_recv_timer = None,
                             }
+                            // Note: notify_timer_fired() returns Vec<GenericEvent<PacketIdType>>, process events
                             let events = connection.notify_timer_fired(kind);
                             // Process events recursively
                             Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
@@ -408,6 +434,7 @@ where
     ) {
         // Process requests from the front (index 0) to maintain FIFO order
         while !pending_requests.is_empty() {
+            // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
             match connection.acquire_packet_id() {
                 Ok(packet_id) => {
                     // Successfully acquired packet ID, remove and send to the first waiting requester
@@ -689,7 +716,7 @@ where
     }
 
     /// Close the endpoint connection
-    /// 
+    ///
     /// This method performs a graceful shutdown by:
     /// 1. Shutting down the transport layer
     /// 2. Notifying the MQTT connection that it's being closed
@@ -699,6 +726,39 @@ where
 
         self.tx_send
             .send(RequestResponse::Close { response_tx })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Restore packets to the connection store
+    ///
+    /// This method allows restoring previously stored packets back to the connection.
+    /// This is typically used during session restoration to recover in-flight QoS 1 and QoS 2 packets.
+    /// The packets will be restored to the appropriate internal tracking structures based on their type and QoS level.
+    pub async fn restore_packets(&self, packets: Vec<GenericStorePacket<PacketIdType>>) -> Result<(), SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx_send
+            .send(RequestResponse::RestorePackets {
+                packets,
+                response_tx,
+            })
+            .map_err(|_| SendError::ChannelClosed)?;
+
+        response_rx.await.map_err(|_| SendError::ChannelClosed)?
+    }
+
+    /// Get all stored packets from the connection store
+    /// 
+    /// This method retrieves all currently stored packets from the connection.
+    /// This is typically used for session persistence to save in-flight QoS 1 and QoS 2 packets
+    /// before closing the connection, so they can be restored later with restore_packets().
+    pub async fn get_stored_packets(&self) -> Result<Vec<GenericStorePacket<PacketIdType>>, SendError> {
+        let (response_tx, response_rx) = oneshot::channel();
+
+        self.tx_send
+            .send(RequestResponse::GetStoredPackets { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
