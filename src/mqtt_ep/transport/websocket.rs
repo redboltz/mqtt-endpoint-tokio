@@ -236,24 +236,39 @@ impl TransportOps for WebSocketTransport {
         }
     }
 
-    async fn shutdown(&mut self, timeout_duration: Duration) -> Result<(), TransportError> {
+    async fn shutdown(&mut self, timeout_duration: Duration) {
         use futures_util::SinkExt;
 
-        timeout(timeout_duration, async {
+        // Try graceful WebSocket shutdown first with timeout
+        let graceful_result = timeout(timeout_duration, async {
             match self {
                 WebSocketTransport::Plain(adapter) => {
+                    // Send close frame and wait for acknowledgment
                     adapter.ws.send(Message::Close(None)).await?;
                     adapter.ws.close(None).await?;
                 }
                 WebSocketTransport::Tls(adapter) => {
+                    // Send close frame and wait for acknowledgment
                     adapter.ws.send(Message::Close(None)).await?;
                     adapter.ws.close(None).await?;
                 }
             }
             Ok::<(), WsError>(())
-        })
-        .await
-        .map_err(|_| TransportError::Timeout)?
-        .map_err(|e| TransportError::WebSocket(Box::new(e)))
+        }).await;
+
+        // If graceful shutdown fails or times out, force close the connection
+        match graceful_result {
+            Ok(Ok(())) => {
+                // Graceful WebSocket shutdown succeeded
+            }
+            Ok(Err(_ws_error)) => {
+                // Graceful WebSocket shutdown failed, force close by dropping the stream
+                // The WebSocket connection will be closed when it goes out of scope
+            }
+            Err(_timeout_error) => {
+                // Timeout occurred, force close by dropping the stream
+                // The WebSocket connection will be closed when it goes out of scope
+            }
+        }
     }
 }

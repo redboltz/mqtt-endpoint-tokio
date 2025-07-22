@@ -141,10 +141,23 @@ impl TransportOps for TlsTransport {
         self.stream.read(buffer).await.map_err(TransportError::Io)
     }
 
-    async fn shutdown(&mut self, timeout_duration: Duration) -> Result<(), TransportError> {
-        timeout(timeout_duration, self.stream.shutdown())
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(TransportError::Io)
+    async fn shutdown(&mut self, timeout_duration: Duration) {
+        // Try graceful TLS shutdown first with timeout
+        let graceful_result = timeout(timeout_duration, self.stream.shutdown()).await;
+        
+        // If graceful shutdown fails or times out, force close the connection
+        match graceful_result {
+            Ok(Ok(())) => {
+                // Graceful TLS shutdown succeeded
+            }
+            Ok(Err(_io_error)) => {
+                // Graceful TLS shutdown failed, force close by dropping the stream
+                // The stream will be closed when it goes out of scope
+            }
+            Err(_timeout_error) => {
+                // Timeout occurred, force close by dropping the stream
+                // The stream will be closed when it goes out of scope
+            }
+        }
     }
 }

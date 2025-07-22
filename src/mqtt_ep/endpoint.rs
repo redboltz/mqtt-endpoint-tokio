@@ -269,17 +269,16 @@ where
                                 Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                             }
                             Some(RequestResponse::Close { response_tx }) => {
-                                // Shutdown the stream first
-                                if let Err(e) = stream.shutdown().await {
-                                    let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
-                                } else {
-                                    // Notify connection that it's being closed
-                                    let events = connection.notify_closed();
-                                    // Send success response immediately
-                                    let _ = response_tx.send(Ok(()));
-                                    // Process the close events
-                                    Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                                }
+                                // Shutdown the stream first - ignore errors as we want to force close if needed
+                                let _ = stream.shutdown().await;
+                                
+                                // Notify connection that it's being closed
+                                let events = connection.notify_closed();
+                                // Send success response immediately
+                                let _ = response_tx.send(Ok(()));
+                                // Process the close events
+                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                                
                                 // Break out of the event loop after close
                                 break;
                             }

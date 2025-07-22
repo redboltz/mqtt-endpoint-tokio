@@ -72,7 +72,7 @@ impl From<std::io::Error> for TransportError {
 pub trait TransportOps {
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError>;
     async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError>;
-    async fn shutdown(&mut self, timeout: Duration) -> Result<(), TransportError>;
+    async fn shutdown(&mut self, timeout: Duration);
 }
 
 impl TransportOps for Transport {
@@ -94,7 +94,7 @@ impl TransportOps for Transport {
         }
     }
 
-    async fn shutdown(&mut self, timeout: Duration) -> Result<(), TransportError> {
+    async fn shutdown(&mut self, timeout: Duration) {
         match self {
             Transport::Tcp(t) => t.shutdown(timeout).await,
             Transport::Tls(t) => t.shutdown(timeout).await,
