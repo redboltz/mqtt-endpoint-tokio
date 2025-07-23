@@ -304,49 +304,6 @@ where
     }
 
 
-    async fn process_events_with_recv<S>(
-        connection: &mut GenericConnection<Role, PacketIdType>,
-        stream: &mut S,
-        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        timer_tx: &mpsc::UnboundedSender<TimerKind>,
-        pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
-        events: Vec<GenericEvent<PacketIdType>>,
-    ) -> Option<GenericPacket<PacketIdType>>
-    where
-        S: AsyncWrite + Unpin,
-    {
-        let mut received_packet = None;
-
-        for event in events {
-            match event {
-                GenericEvent::NotifyPacketReceived(packet) => {
-                    // Store the received packet (should be only one per events batch)
-                    received_packet = Some(packet);
-                }
-                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
-                    // Handle packet ID release and process waiting queue
-                    Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
-                }
-                _ => {
-                    // Process other events as before
-                    Self::process_single_event(
-                        connection,
-                        stream,
-                        pingreq_send_timer,
-                        pingreq_recv_timer,
-                        pingresp_recv_timer,
-                        timer_tx,
-                        event,
-                    )
-                    .await;
-                }
-            }
-        }
-
-        received_packet
-    }
 
     async fn process_events<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
@@ -569,7 +526,7 @@ where
 
             GenericEvent::NotifyPacketReceived(_packet) => {
                 // This should not happen in process_single_event
-                // NotifyPacketReceived is handled separately in process_events_with_recv
+                // NotifyPacketReceived is handled separately in RequestResponse::Recv
             }
         }
     }
@@ -880,9 +837,58 @@ where
                             let _ = response_tx.send(Ok(()));
                             Self::process_events(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                         }
-                        Some(RequestResponse::Recv { filter: _, response_tx }) => {
-                            // TODO: Implement recv with filter
-                            let _ = response_tx.send(Err(SendError::ConnectionError("Recv not implemented".to_string())));
+                        Some(RequestResponse::Recv { filter, response_tx }) => {
+                            // Read and process packets until we find one matching the filter
+                            let mut response_tx = Some(response_tx);
+                            
+                            loop {
+                                match transport.recv(&mut read_buffer).await {
+                                    Ok(0) => {
+                                        // EOF - connection closed
+                                        if let Some(tx) = response_tx.take() {
+                                            let _ = tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
+                                        }
+                                        break;
+                                    }
+                                    Ok(n) => {
+                                        // Process received bytes
+                                        let mut cursor = std::io::Cursor::new(&read_buffer[..n]);
+                                        let events = connection.recv(&mut cursor);
+                                        
+                                        // Check events for received packets matching the filter
+                                        let mut found_match = false;
+                                        for event in &events {
+                                            if let GenericEvent::NotifyPacketReceived(packet) = event {
+                                                if filter.matches(packet) {
+                                                    // Send packet to requester
+                                                    if let Some(tx) = response_tx.take() {
+                                                        let _ = tx.send(Ok(packet.clone()));
+                                                    }
+                                                    found_match = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                        
+                                        // Process all connection events
+                                        Self::process_events(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                                        
+                                        // If we found a matching packet, exit the recv loop
+                                        if found_match {
+                                            break;
+                                        }
+                                        
+                                        // Continue reading for more packets
+                                    }
+                                    Err(e) => {
+                                        // IO error
+                                        if let Some(tx) = response_tx.take() {
+                                            let _ = tx.send(Err(SendError::ConnectionError(e.to_string())));
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
                         }
                         Some(RequestResponse::AcquirePacketId { response_tx }) => {
                             match connection.acquire_packet_id() {
@@ -905,7 +911,7 @@ where
                             }
                         }
                         Some(RequestResponse::RegisterPacketId { packet_id, response_tx }) => {
-                            connection.register_packet_id(packet_id);
+                            let _ = connection.register_packet_id(packet_id);
                             let _ = response_tx.send(Ok(()));
                         }
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
@@ -966,18 +972,6 @@ where
                     }
                 }
 
-                // Handle transport receive
-                result = transport.recv(&mut read_buffer) => {
-                    match result {
-                        Ok(0) => break, // EOF
-                        Ok(n) => {
-                            let mut cursor = Cursor::new(&read_buffer[..n]);
-                            let events = connection.recv(&mut cursor);
-                            Self::process_events_with_recv(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                        }
-                        Err(_) => break, // Read error
-                    }
-                }
             }
         }
 
