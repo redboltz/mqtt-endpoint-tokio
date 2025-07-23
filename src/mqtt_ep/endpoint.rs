@@ -684,8 +684,8 @@ where
                                 Ok(packet_id) => {
                                     let _ = response_tx.send(Ok(packet_id));
                                 }
-                                Err(_) => {
-                                    pending_packet_id_requests.push(response_tx);
+                                Err(e) => {
+                                    let _ = response_tx.send(Err(SendError::ConnectionError(format!("Failed to acquire packet ID: {:?}", e))));
                                 }
                             }
                         }
@@ -704,20 +704,10 @@ where
                             let _ = response_tx.send(Ok(()));
                         }
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
-                            connection.release_packet_id(packet_id);
+                            let events = connection.release_packet_id(packet_id);
                             let _ = response_tx.send(Ok(()));
-
-                            // Check if we can fulfill any pending packet ID requests
-                            while let Some(pending_tx) = pending_packet_id_requests.pop() {
-                                if let Ok(packet_id) = connection.acquire_packet_id() {
-                                    if let Err(_) = pending_tx.send(Ok(packet_id)) {
-                                        connection.release_packet_id(packet_id);
-                                        break;
-                                    }
-                                } else {
-                                    pending_packet_id_requests.push(pending_tx);
-                                    break;
-                                }
+                            if let Some(ref mut t) = transport {
+                                Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
                             }
                         }
                         Some(RequestResponse::RestorePackets { packets, response_tx }) => {
@@ -739,14 +729,10 @@ where
                             }
                         }
                         Some(RequestResponse::Connect { transport: new_transport, options, response_tx }) => {
-                            // Perform handshake
                             let mut boxed_transport = new_transport;
                             match boxed_transport.handshake().await {
                                 Ok(()) => {
-                                    // Apply connection options
                                     Self::apply_connection_options(&mut connection, &options);
-
-                                    // Set the transport
                                     transport = Some(boxed_transport);
                                     let _ = response_tx.send(Ok(()));
                                 }
