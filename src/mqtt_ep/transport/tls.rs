@@ -211,11 +211,12 @@ impl TransportOps for TlsTransport {
     ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
         Box::pin(async move {
             let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
-
-            for buf in buffers {
-                stream.write_all(buf).await.map_err(TransportError::Io)?;
-            }
-            Ok(())
+            
+            stream
+                .write_vectored(buffers)
+                .await
+                .map(|_| ()) // Ignore bytes written count
+                .map_err(TransportError::Io)
         })
     }
 

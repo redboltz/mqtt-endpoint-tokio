@@ -245,7 +245,10 @@ impl TransportOps for WebSocketTransport {
         buffers: &'a [IoSlice<'a>],
     ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
         Box::pin(async move {
-            let mut combined = Vec::new();
+            // Calculate total size and pre-allocate
+            let total_len: usize = buffers.iter().map(|buf| buf.len()).sum();
+            let mut combined = Vec::with_capacity(total_len);
+            
             for buf in buffers {
                 combined.extend_from_slice(buf);
             }

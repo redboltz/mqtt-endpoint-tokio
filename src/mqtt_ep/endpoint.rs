@@ -26,6 +26,7 @@ use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
+use std::future;
 
 use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::connection::event::TimerKind;
@@ -809,6 +810,8 @@ where
             Vec::new();
         let mut pending_close_notifications: Vec<oneshot::Sender<Result<(), SendError>>> =
             Vec::new();
+        let mut pending_recv_requests: Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)> =
+            Vec::new();
         let mut transport: Option<Box<dyn crate::mqtt_ep::transport::TransportOps + Send>> = None;
         let mut read_buffer = vec![0u8; 4096];
 
@@ -825,63 +828,10 @@ where
                             }
                         }
                         Some(RequestResponse::Recv { filter, response_tx }) => {
-                            // Check if transport is available
-                            if let Some(ref mut t) = transport {
-                                // Read and process packets until we find one matching the filter
-                                let mut response_tx = Some(response_tx);
-
-                                loop {
-                                    match t.recv(&mut read_buffer).await {
-                                        Ok(0) => {
-                                            // EOF - connection closed
-                                            if let Some(tx) = response_tx.take() {
-                                                let _ = tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
-                                            }
-                                            break;
-                                        }
-                                        Ok(n) => {
-                                            // Process received bytes
-                                            let mut cursor = std::io::Cursor::new(&read_buffer[..n]);
-                                            let events = connection.recv(&mut cursor);
-
-                                            // Check events for received packets matching the filter
-                                            let mut found_match = false;
-                                            for event in &events {
-                                                if let GenericEvent::NotifyPacketReceived(packet) = event {
-                                                    if filter.matches(packet) {
-                                                        // Send packet to requester
-                                                        if let Some(tx) = response_tx.take() {
-                                                            let _ = tx.send(Ok(packet.clone()));
-                                                        }
-                                                        found_match = true;
-                                                        break;
-                                                    }
-                                                }
-                                            }
-
-                                            // Process all connection events
-                                            Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-
-                                            // If we found a matching packet, exit the recv loop
-                                            if found_match {
-                                                break;
-                                            }
-
-                                            // Continue reading for more packets
-                                        }
-                                        Err(e) => {
-                                            // IO error - connection broken
-                                            if let Some(tx) = response_tx.take() {
-                                                let _ = tx.send(Err(SendError::ConnectionError(e.to_string())));
-                                            }
-                                            // Transport is broken, remove it
-                                            transport = None;
-                                            break;
-                                        }
-                                    }
-                                }
+                            // Add to pending queue (non-blocking)
+                            if transport.is_some() {
+                                pending_recv_requests.push((filter, response_tx));
                             } else {
-                                // No transport available
                                 let _ = response_tx.send(Err(SendError::NotConnected));
                             }
                         }
@@ -991,6 +941,44 @@ where
                     }
                 }
 
+                // Handle transport receive (only when there are pending recv requests)
+                recv_result = async {
+                    if let Some(ref mut t) = transport {
+                        if !pending_recv_requests.is_empty() {
+                            Some(t.recv(&mut read_buffer).await)
+                        } else {
+                            // No pending recv requests, don't try to receive
+                            future::pending().await
+                        }
+                    } else {
+                        // No transport available
+                        future::pending().await
+                    }
+                } => {
+                    if let Some(result) = recv_result {
+                        match result {
+                            Ok(n) if n > 0 => {
+                                // Process received bytes
+                                let mut cursor = std::io::Cursor::new(&read_buffer[..n]);
+                                let events = connection.recv(&mut cursor);
+                                
+                                // Check events for received packets matching pending filters
+                                Self::process_received_packets(&events, &mut pending_recv_requests);
+                                
+                                // Process other connection events
+                                if let Some(ref mut t) = transport {
+                                    Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                                }
+                            }
+                            Ok(_) | Err(_) => {
+                                // Connection closed (n = 0) or error - notify all pending recv requests
+                                Self::notify_recv_connection_error(&mut pending_recv_requests);
+                                transport = None;
+                            }
+                        }
+                    }
+                }
+
             }
         }
 
@@ -1003,6 +991,44 @@ where
         }
         if let Some(handle) = pingresp_recv_timer {
             handle.abort();
+        }
+    }
+
+    /// Process received packets and satisfy matching recv requests
+    fn process_received_packets(
+        events: &[GenericEvent<PacketIdType>],
+        pending_recv_requests: &mut Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)>
+    ) {
+        let mut satisfied_indices = Vec::new();
+        
+        for event in events {
+            if let GenericEvent::NotifyPacketReceived(packet) = event {
+                // Find first matching filter
+                for (i, (filter, _)) in pending_recv_requests.iter().enumerate() {
+                    if filter.matches(packet) {
+                        satisfied_indices.push(i);
+                        break; // Only satisfy one request per packet
+                    }
+                }
+            }
+        }
+        
+        // Remove satisfied requests in reverse order and send responses
+        for &index in satisfied_indices.iter().rev() {
+            let (_, response_tx) = pending_recv_requests.swap_remove(index);
+            if let Some(GenericEvent::NotifyPacketReceived(packet)) = events.iter()
+                .find(|e| matches!(e, GenericEvent::NotifyPacketReceived(_))) {
+                let _ = response_tx.send(Ok(packet.clone()));
+            }
+        }
+    }
+
+    /// Notify all pending recv requests about connection error
+    fn notify_recv_connection_error(
+        pending_recv_requests: &mut Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)>
+    ) {
+        for (_, response_tx) in pending_recv_requests.drain(..) {
+            let _ = response_tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
         }
     }
 }
