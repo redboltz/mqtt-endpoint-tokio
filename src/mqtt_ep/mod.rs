@@ -21,8 +21,14 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+pub mod connection_option;
 pub mod endpoint;
+pub mod packet_filter;
+pub mod request_response;
 pub mod transport;
 
-pub use endpoint::{Endpoint, GenericEndpoint, PacketFilter, SendError};
+pub use connection_option::ConnectionOption;
+pub use endpoint::{Endpoint, GenericEndpoint};
+pub use packet_filter::PacketFilter;
+pub use request_response::{ConnectError, DisconnectError, SendError};
 pub use transport::{ClientConfig, ServerConfig, Transport, TransportError, TransportOps};

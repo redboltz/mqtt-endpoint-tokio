@@ -136,7 +136,7 @@ impl TransportOps for TcpTransport {
     ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
         Box::pin(async move {
             let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
-            
+
             stream
                 .write_vectored(buffers)
                 .await

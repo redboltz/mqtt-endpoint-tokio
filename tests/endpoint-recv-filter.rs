@@ -78,20 +78,30 @@ async fn test_recv_filtered_compilation() {
     // This test verifies that the recv_filtered API compiles correctly
     // We can't easily test the actual filtering without setting up a full MQTT connection
 
-    let (client_stream, _server_stream) = tokio::io::duplex(1024);
-
-    let endpoint: ClientEndpoint = GenericEndpoint::new(Version::V3_1_1, client_stream);
+    let endpoint: ClientEndpoint = GenericEndpoint::new_disconnected(Version::V3_1_1);
 
     // Test that the API compiles - we can't actually receive anything without a real connection
-    // In a timeout to prevent hanging
+    // Try to receive with timeout
     let result = timeout(
         Duration::from_millis(10),
         endpoint.recv_filtered(PacketFilter::include(vec![PacketType::Publish])),
     )
     .await;
 
-    // We expect timeout since there's no data to read
-    assert!(result.is_err());
+    // For disconnected endpoint, recv_filtered should return NotConnected error immediately
+    // or timeout due to no connection being established
+    match result {
+        Ok(recv_result) => {
+            // If recv completed immediately, it should be an error (NotConnected)
+            assert!(
+                recv_result.is_err(),
+                "Expected error from recv_filtered on disconnected endpoint"
+            );
+        }
+        Err(_timeout) => {
+            // Timeout is also acceptable behavior
+        }
+    }
 
     // Test filter creation compile
     let _publish_future = endpoint.recv_filtered(PacketFilter::include(vec![PacketType::Publish]));

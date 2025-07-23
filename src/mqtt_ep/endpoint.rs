@@ -22,11 +22,12 @@ use serde::Serialize;
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
+use std::future;
+use std::hash::Hash;
 use std::marker::PhantomData;
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
-use std::future;
 
 use mqtt_protocol_core::mqtt::Version;
 use mqtt_protocol_core::mqtt::connection::event::TimerKind;
@@ -34,9 +35,12 @@ use mqtt_protocol_core::mqtt::connection::role::RoleType;
 use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
 use mqtt_protocol_core::mqtt::packet::v5_0;
-use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket, PacketType};
+use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
-use std::hash::Hash;
+
+use crate::mqtt_ep::connection_option::ConnectionOption;
+use crate::mqtt_ep::packet_filter::PacketFilter;
+use crate::mqtt_ep::request_response::{ConnectError, RequestResponse, SendError, SendableErased};
 
 /// Configuration for MQTT endpoint (settable only at initialization time)
 #[derive(Debug, Clone)]
@@ -50,87 +54,6 @@ impl Default for EndpointConfig {
         Self {
             default_connection_options: ConnectionOption::default(),
         }
-    }
-}
-
-/// Connection options that can be set dynamically for each connection/reconnection
-#[derive(Debug, Clone)]
-pub struct ConnectionOption {
-    /// PINGREQ send interval in milliseconds (for v3.1.1 and v5.0)
-    pub pingreq_send_interval: Option<u64>,
-    /// Keep alive interval in seconds (for v3.1.1 and v5.0)
-    pub keep_alive_interval: Option<u16>,
-    /// Packet ID exhaust retry interval in milliseconds
-    pub packet_id_exhaust_retry_interval: Option<u64>,
-}
-
-impl Default for ConnectionOption {
-    fn default() -> Self {
-        Self {
-            pingreq_send_interval: None,
-            keep_alive_interval: None,
-            packet_id_exhaust_retry_interval: None,
-        }
-    }
-}
-
-impl ConnectionOption {
-    /// Create a new ConnectionOption with default values
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    /// Set the PINGREQ send interval in milliseconds
-    pub fn pingreq_send_interval(mut self, interval: u64) -> Self {
-        self.pingreq_send_interval = Some(interval);
-        self
-    }
-
-    /// Set the keep alive interval in seconds
-    pub fn keep_alive_interval(mut self, interval: u16) -> Self {
-        self.keep_alive_interval = Some(interval);
-        self
-    }
-
-    /// Set the packet ID exhaust retry interval in milliseconds
-    pub fn packet_id_exhaust_retry_interval(mut self, interval: u64) -> Self {
-        self.packet_id_exhaust_retry_interval = Some(interval);
-        self
-    }
-}
-
-/// Packet filter for selective receiving
-#[derive(Debug, Clone)]
-pub enum PacketFilter {
-    /// Accept packets of any of these types
-    Include(Vec<PacketType>),
-    /// Reject packets of any of these types (accept all others)
-    Exclude(Vec<PacketType>),
-    /// Accept all packets (no filtering)
-    Any,
-}
-
-impl PacketFilter {
-    /// Check if a packet matches this filter
-    pub fn matches<PacketIdType>(&self, packet: &GenericPacket<PacketIdType>) -> bool
-    where
-        PacketIdType: IsPacketId + Serialize,
-    {
-        match self {
-            PacketFilter::Include(types) => types.contains(&packet.packet_type()),
-            PacketFilter::Exclude(types) => !types.contains(&packet.packet_type()),
-            PacketFilter::Any => true,
-        }
-    }
-
-    /// Create an include filter for specific packet types
-    pub fn include(types: impl Into<Vec<PacketType>>) -> Self {
-        PacketFilter::Include(types.into())
-    }
-
-    /// Create an exclude filter for specific packet types
-    pub fn exclude(types: impl Into<Vec<PacketType>>) -> Self {
-        PacketFilter::Exclude(types.into())
     }
 }
 
@@ -182,87 +105,6 @@ where
     tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
     event_loop_handle: tokio::task::JoinHandle<()>,
     _marker: PhantomData<Role>,
-}
-
-enum RequestResponse<Role, PacketIdType>
-where
-    Role: RoleType,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
-{
-    Send {
-        packet: Box<dyn SendableErased<Role, PacketIdType>>,
-        response_tx: oneshot::Sender<Result<(), SendError>>,
-    },
-    Recv {
-        filter: PacketFilter,
-        response_tx: oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
-    },
-    AcquirePacketId {
-        response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
-    },
-    AcquirePacketIdWhenAvailable {
-        response_tx: oneshot::Sender<Result<PacketIdType, SendError>>,
-    },
-    RegisterPacketId {
-        packet_id: PacketIdType,
-        response_tx: oneshot::Sender<Result<(), SendError>>,
-    },
-    ReleasePacketId {
-        packet_id: PacketIdType,
-        response_tx: oneshot::Sender<Result<(), SendError>>,
-    },
-    Close {
-        response_tx: oneshot::Sender<Result<(), SendError>>,
-    },
-    Connect {
-        transport: Box<dyn crate::mqtt_ep::transport::TransportOps + Send>,
-        options: ConnectionOption,
-        response_tx: oneshot::Sender<Result<(), ConnectError>>,
-    },
-    RestorePackets {
-        packets: Vec<GenericStorePacket<PacketIdType>>,
-        response_tx: oneshot::Sender<Result<(), SendError>>,
-    },
-    GetStoredPackets {
-        response_tx: oneshot::Sender<Result<Vec<GenericStorePacket<PacketIdType>>, SendError>>,
-    },
-    RegulateForStore {
-        packet: v5_0::GenericPublish<PacketIdType>,
-        response_tx: oneshot::Sender<Result<v5_0::GenericPublish<PacketIdType>, SendError>>,
-    },
-}
-
-/// Type-erased trait for sending Sendable packets through channels
-trait SendableErased<Role, PacketIdType>: Send
-where
-    Role: RoleType,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
-{
-    fn dispatch_send_boxed(
-        self: Box<Self>,
-        connection: &mut GenericConnection<Role, PacketIdType>,
-    ) -> Vec<GenericEvent<PacketIdType>>;
-}
-
-impl<T, Role, PacketIdType> SendableErased<Role, PacketIdType> for T
-where
-    T: Sendable<Role, PacketIdType> + Send,
-    Role: RoleType,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
-{
-    fn dispatch_send_boxed(
-        self: Box<Self>,
-        connection: &mut GenericConnection<Role, PacketIdType>,
-    ) -> Vec<GenericEvent<PacketIdType>> {
-        (*self).dispatch_send(connection)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub enum SendError {
-    ChannelClosed,
-    ConnectionError(String),
-    NotConnected,
 }
 
 impl<Role, PacketIdType> GenericEndpoint<Role, PacketIdType>
@@ -810,8 +652,10 @@ where
             Vec::new();
         let mut pending_close_notifications: Vec<oneshot::Sender<Result<(), SendError>>> =
             Vec::new();
-        let mut pending_recv_requests: Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)> =
-            Vec::new();
+        let mut pending_recv_requests: Vec<(
+            PacketFilter,
+            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+        )> = Vec::new();
         let mut transport: Option<Box<dyn crate::mqtt_ep::transport::TransportOps + Send>> = None;
         let mut read_buffer = vec![0u8; 4096];
 
@@ -997,7 +841,10 @@ where
     /// Process received packets and satisfy matching recv requests
     fn process_received_packets(
         events: &[GenericEvent<PacketIdType>],
-        pending_recv_requests: &mut Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)>
+        pending_recv_requests: &mut Vec<(
+            PacketFilter,
+            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+        )>,
     ) {
         let mut satisfied_indices = Vec::new();
 
@@ -1016,8 +863,10 @@ where
         // Remove satisfied requests in reverse order and send responses
         for &index in satisfied_indices.iter().rev() {
             let (_, response_tx) = pending_recv_requests.swap_remove(index);
-            if let Some(GenericEvent::NotifyPacketReceived(packet)) = events.iter()
-                .find(|e| matches!(e, GenericEvent::NotifyPacketReceived(_))) {
+            if let Some(GenericEvent::NotifyPacketReceived(packet)) = events
+                .iter()
+                .find(|e| matches!(e, GenericEvent::NotifyPacketReceived(_)))
+            {
                 let _ = response_tx.send(Ok(packet.clone()));
             }
         }
@@ -1025,48 +874,17 @@ where
 
     /// Notify all pending recv requests about connection error
     fn notify_recv_connection_error(
-        pending_recv_requests: &mut Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)>
+        pending_recv_requests: &mut Vec<(
+            PacketFilter,
+            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+        )>,
     ) {
         for (_, response_tx) in pending_recv_requests.drain(..) {
-            let _ = response_tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
+            let _ = response_tx.send(Err(SendError::ConnectionError(
+                "Connection closed".to_string(),
+            )));
         }
     }
 }
-
-#[derive(Debug)]
-pub enum ConnectError {
-    Transport(crate::mqtt_ep::transport::TransportError),
-    AlreadyConnected,
-}
-
-impl std::fmt::Display for ConnectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ConnectError::Transport(e) => write!(f, "Transport error: {}", e),
-            ConnectError::AlreadyConnected => write!(f, "Already connected"),
-        }
-    }
-}
-
-impl std::error::Error for ConnectError {}
-
-#[derive(Debug)]
-pub enum DisconnectError {
-    SendError(SendError),
-    AlreadyDisconnected,
-    ChannelClosed,
-}
-
-impl std::fmt::Display for DisconnectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            DisconnectError::SendError(e) => write!(f, "Send error: {:?}", e),
-            DisconnectError::AlreadyDisconnected => write!(f, "Already disconnected"),
-            DisconnectError::ChannelClosed => write!(f, "Channel closed"),
-        }
-    }
-}
-
-impl std::error::Error for DisconnectError {}
 
 pub type Endpoint<Role> = GenericEndpoint<Role, u16>;

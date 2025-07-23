@@ -248,7 +248,7 @@ impl TransportOps for WebSocketTransport {
             // Calculate total size and pre-allocate
             let total_len: usize = buffers.iter().map(|buf| buf.len()).sum();
             let mut combined = Vec::with_capacity(total_len);
-            
+
             for buf in buffers {
                 combined.extend_from_slice(buf);
             }
