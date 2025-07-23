@@ -837,8 +837,12 @@ where
 
         let mut pending_packet_id_requests: Vec<oneshot::Sender<Result<PacketIdType, SendError>>> = Vec::new();
         let mut read_buffer = vec![0u8; 4096];
+        let mut should_exit = false;
 
         loop {
+            if should_exit {
+                break;
+            }
             tokio::select! {
                 // Handle requests from external API
                 request = rx_send.recv() => {
@@ -859,6 +863,7 @@ where
                                         if let Some(tx) = response_tx.take() {
                                             let _ = tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
                                         }
+                                        should_exit = true;
                                         break;
                                     }
                                     Ok(n) => {
@@ -892,10 +897,11 @@ where
                                         // Continue reading for more packets
                                     }
                                     Err(e) => {
-                                        // IO error
+                                        // IO error - connection broken
                                         if let Some(tx) = response_tx.take() {
                                             let _ = tx.send(Err(SendError::ConnectionError(e.to_string())));
                                         }
+                                        should_exit = true;
                                         break;
                                     }
                                 }
