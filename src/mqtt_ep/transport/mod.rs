@@ -29,7 +29,9 @@ pub use tcp::TcpTransport;
 pub use tls::TlsTransport;
 pub use websocket::{WebSocketAdapter, WebSocketTransport};
 
+use std::future::Future;
 use std::io::IoSlice;
+use std::pin::Pin;
 use tokio::time::Duration;
 
 #[derive(Debug)]
@@ -73,55 +75,107 @@ impl From<std::io::Error> for TransportError {
 
 pub trait TransportOps {
     /// Perform transport layer handshake (connection establishment)
-    fn handshake(&mut self) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
-    fn send(&mut self, buffers: &[IoSlice<'_>]) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
-    fn recv(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = Result<usize, TransportError>> + Send;
-    fn shutdown(&mut self, timeout: Duration) -> impl std::future::Future<Output = ()> + Send;
+    fn handshake<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
+    fn send<'a>(
+        &'a mut self,
+        buffers: &'a [IoSlice<'a>],
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>>;
+    fn recv<'a>(
+        &'a mut self,
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, TransportError>> + Send + 'a>>;
+    fn shutdown<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>;
 }
 
 impl TransportOps for Transport {
-    fn handshake(&mut self) -> impl std::future::Future<Output = Result<(), TransportError>> + Send {
-        async move {
+    fn handshake<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
             match self {
                 Transport::Tcp(t) => t.handshake().await,
                 Transport::Tls(t) => t.handshake().await,
                 Transport::WebSocket(t) => t.handshake().await,
                 Transport::WebSocketTls(t) => t.handshake().await,
             }
-        }
+        })
     }
 
-    fn send(&mut self, buffers: &[IoSlice<'_>]) -> impl std::future::Future<Output = Result<(), TransportError>> + Send {
-        async move {
+    fn send<'a>(
+        &'a mut self,
+        buffers: &'a [IoSlice<'a>],
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
             match self {
                 Transport::Tcp(t) => t.send(buffers).await,
                 Transport::Tls(t) => t.send(buffers).await,
                 Transport::WebSocket(t) => t.send(buffers).await,
                 Transport::WebSocketTls(t) => t.send(buffers).await,
             }
-        }
+        })
     }
 
-    fn recv(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = Result<usize, TransportError>> + Send {
-        async move {
+    fn recv<'a>(
+        &'a mut self,
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, TransportError>> + Send + 'a>> {
+        Box::pin(async move {
             match self {
                 Transport::Tcp(t) => t.recv(buffer).await,
                 Transport::Tls(t) => t.recv(buffer).await,
                 Transport::WebSocket(t) => t.recv(buffer).await,
                 Transport::WebSocketTls(t) => t.recv(buffer).await,
             }
-        }
+        })
     }
 
-    fn shutdown(&mut self, timeout: Duration) -> impl std::future::Future<Output = ()> + Send {
-        async move {
+    fn shutdown<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
             match self {
                 Transport::Tcp(t) => t.shutdown(timeout).await,
                 Transport::Tls(t) => t.shutdown(timeout).await,
                 Transport::WebSocket(t) => t.shutdown(timeout).await,
                 Transport::WebSocketTls(t) => t.shutdown(timeout).await,
             }
-        }
+        })
+    }
+}
+
+// Implement TransportOps for Box<dyn TransportOps + Send> to allow trait object usage
+impl TransportOps for Box<dyn TransportOps + Send> {
+    fn handshake<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        (**self).handshake()
+    }
+
+    fn send<'a>(
+        &'a mut self,
+        buffers: &'a [IoSlice<'a>],
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        (**self).send(buffers)
+    }
+
+    fn recv<'a>(
+        &'a mut self,
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, TransportError>> + Send + 'a>> {
+        (**self).recv(buffer)
+    }
+
+    fn shutdown<'a>(
+        &'a mut self,
+        timeout: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        (**self).shutdown(timeout)
     }
 }
 

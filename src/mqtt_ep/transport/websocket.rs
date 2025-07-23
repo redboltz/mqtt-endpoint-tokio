@@ -23,7 +23,9 @@
  */
 use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::IoSlice;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{Duration, timeout};
@@ -200,167 +202,184 @@ impl<S> WebSocketAdapter<S> {
 }
 
 impl TransportOps for WebSocketTransport {
-    async fn handshake(&mut self) -> Result<(), TransportError> {
-        match self {
-            // Already connected
-            WebSocketTransport::Plain(_) | WebSocketTransport::Tls(_) => {
-                return Ok(());
+    fn handshake<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            match self {
+                // Already connected
+                WebSocketTransport::Plain(_) | WebSocketTransport::Tls(_) => {
+                    return Ok(());
+                }
+                // Need to establish connection
+                WebSocketTransport::Unconnected {
+                    url,
+                    headers,
+                    config,
+                } => {
+                    // Parse URL
+                    let parsed_url = Url::parse(url)
+                        .map_err(|e| TransportError::Handshake(format!("Invalid URL: {}", e)))?;
+
+                    // For now, ignore custom headers (simplified implementation)
+                    // In a full implementation, you'd need to create a proper Request with headers
+                    let _ = headers; // Suppress unused warning
+
+                    // Establish WebSocket connection
+                    let (ws_stream, _response) =
+                        timeout(config.connect_timeout, connect_async(parsed_url))
+                            .await
+                            .map_err(|_| TransportError::Timeout)?
+                            .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
+
+                    // Update self to connected state
+                    *self = Self::Plain(WebSocketAdapter::new(ws_stream));
+                    Ok(())
+                }
             }
-            // Need to establish connection
-            WebSocketTransport::Unconnected { url, headers, config } => {
-                // Parse URL
-                let parsed_url = Url::parse(url)
-                    .map_err(|e| TransportError::Handshake(format!("Invalid URL: {}", e)))?;
-
-                // For now, ignore custom headers (simplified implementation)
-                // In a full implementation, you'd need to create a proper Request with headers
-                let _ = headers; // Suppress unused warning
-
-                // Establish WebSocket connection
-                let (ws_stream, _response) = timeout(
-                    config.connect_timeout,
-                    connect_async(parsed_url),
-                )
-                .await
-                .map_err(|_| TransportError::Timeout)?
-                .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
-
-                // Update self to connected state
-                *self = Self::Plain(WebSocketAdapter::new(ws_stream));
-                Ok(())
-            }
-        }
+        })
     }
 
-    async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
-        let mut combined = Vec::new();
-        for buf in buffers {
-            combined.extend_from_slice(buf);
-        }
+    fn send<'a>(
+        &'a mut self,
+        buffers: &'a [IoSlice<'a>],
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            let mut combined = Vec::new();
+            for buf in buffers {
+                combined.extend_from_slice(buf);
+            }
 
-        let message = Message::Binary(combined);
+            let message = Message::Binary(combined);
 
-        match self {
-            WebSocketTransport::Plain(adapter) => {
-                use futures_util::SinkExt;
-                adapter
-                    .ws
-                    .send(message)
-                    .await
-                    .map_err(|e| TransportError::WebSocket(Box::new(e)))
+            match self {
+                WebSocketTransport::Plain(adapter) => {
+                    use futures_util::SinkExt;
+                    adapter
+                        .ws
+                        .send(message)
+                        .await
+                        .map_err(|e| TransportError::WebSocket(Box::new(e)))
+                }
+                WebSocketTransport::Tls(adapter) => {
+                    use futures_util::SinkExt;
+                    adapter
+                        .ws
+                        .send(message)
+                        .await
+                        .map_err(|e| TransportError::WebSocket(Box::new(e)))
+                }
+                WebSocketTransport::Unconnected { .. } => Err(TransportError::NotConnected),
             }
-            WebSocketTransport::Tls(adapter) => {
-                use futures_util::SinkExt;
-                adapter
-                    .ws
-                    .send(message)
-                    .await
-                    .map_err(|e| TransportError::WebSocket(Box::new(e)))
-            }
-            WebSocketTransport::Unconnected { .. } => {
-                Err(TransportError::NotConnected)
-            }
-        }
+        })
     }
 
-    async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError> {
-        match self {
-            WebSocketTransport::Plain(adapter) => {
-                adapter.ensure_data().await?;
+    fn recv<'a>(
+        &'a mut self,
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            match self {
+                WebSocketTransport::Plain(adapter) => {
+                    adapter.ensure_data().await?;
 
-                let available = adapter.read_buffer.len() - adapter.read_pos;
-                let to_copy = buffer.len().min(available);
+                    let available = adapter.read_buffer.len() - adapter.read_pos;
+                    let to_copy = buffer.len().min(available);
 
-                if to_copy > 0 {
-                    buffer[..to_copy].copy_from_slice(
-                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
-                    );
-                    adapter.read_pos += to_copy;
+                    if to_copy > 0 {
+                        buffer[..to_copy].copy_from_slice(
+                            &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
+                        );
+                        adapter.read_pos += to_copy;
+                    }
+
+                    Ok(to_copy)
                 }
+                WebSocketTransport::Tls(adapter) => {
+                    adapter.ensure_data().await?;
 
-                Ok(to_copy)
-            }
-            WebSocketTransport::Tls(adapter) => {
-                adapter.ensure_data().await?;
+                    let available = adapter.read_buffer.len() - adapter.read_pos;
+                    let to_copy = buffer.len().min(available);
 
-                let available = adapter.read_buffer.len() - adapter.read_pos;
-                let to_copy = buffer.len().min(available);
+                    if to_copy > 0 {
+                        buffer[..to_copy].copy_from_slice(
+                            &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
+                        );
+                        adapter.read_pos += to_copy;
+                    }
 
-                if to_copy > 0 {
-                    buffer[..to_copy].copy_from_slice(
-                        &adapter.read_buffer[adapter.read_pos..adapter.read_pos + to_copy],
-                    );
-                    adapter.read_pos += to_copy;
+                    Ok(to_copy)
                 }
-
-                Ok(to_copy)
+                WebSocketTransport::Unconnected { .. } => Err(TransportError::NotConnected),
             }
-            WebSocketTransport::Unconnected { .. } => {
-                Err(TransportError::NotConnected)
-            }
-        }
+        })
     }
 
-    async fn shutdown(&mut self, timeout_duration: Duration) {
-        use futures_util::SinkExt;
+    fn shutdown<'a>(
+        &'a mut self,
+        timeout_duration: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            use futures_util::SinkExt;
 
-        match self {
-            WebSocketTransport::Plain(adapter) => {
-                // Try graceful WebSocket shutdown first with timeout
-                let graceful_result = timeout(timeout_duration, async {
-                    // Send close frame and wait for acknowledgment
-                    adapter.ws.send(Message::Close(None)).await?;
-                    adapter.ws.close(None).await?;
-                    Ok::<(), WsError>(())
-                })
-                .await;
+            match self {
+                WebSocketTransport::Plain(adapter) => {
+                    // Try graceful WebSocket shutdown first with timeout
+                    let graceful_result = timeout(timeout_duration, async {
+                        // Send close frame and wait for acknowledgment
+                        adapter.ws.send(Message::Close(None)).await?;
+                        adapter.ws.close(None).await?;
+                        Ok::<(), WsError>(())
+                    })
+                    .await;
 
-                // Handle result (success or failure)
-                match graceful_result {
-                    Ok(Ok(())) => {
-                        // Graceful WebSocket shutdown succeeded
-                    }
-                    Ok(Err(_ws_error)) => {
-                        // Graceful WebSocket shutdown failed, force close
-                    }
-                    Err(_timeout_error) => {
-                        // Timeout occurred, force close
+                    // Handle result (success or failure)
+                    match graceful_result {
+                        Ok(Ok(())) => {
+                            // Graceful WebSocket shutdown succeeded
+                        }
+                        Ok(Err(_ws_error)) => {
+                            // Graceful WebSocket shutdown failed, force close
+                        }
+                        Err(_timeout_error) => {
+                            // Timeout occurred, force close
+                        }
                     }
                 }
-            }
-            WebSocketTransport::Tls(adapter) => {
-                // Try graceful WebSocket shutdown first with timeout
-                let graceful_result = timeout(timeout_duration, async {
-                    // Send close frame and wait for acknowledgment
-                    adapter.ws.send(Message::Close(None)).await?;
-                    adapter.ws.close(None).await?;
-                    Ok::<(), WsError>(())
-                })
-                .await;
+                WebSocketTransport::Tls(adapter) => {
+                    // Try graceful WebSocket shutdown first with timeout
+                    let graceful_result = timeout(timeout_duration, async {
+                        // Send close frame and wait for acknowledgment
+                        adapter.ws.send(Message::Close(None)).await?;
+                        adapter.ws.close(None).await?;
+                        Ok::<(), WsError>(())
+                    })
+                    .await;
 
-                // Handle result (success or failure)
-                match graceful_result {
-                    Ok(Ok(())) => {
-                        // Graceful WebSocket shutdown succeeded
-                    }
-                    Ok(Err(_ws_error)) => {
-                        // Graceful WebSocket shutdown failed, force close
-                    }
-                    Err(_timeout_error) => {
-                        // Timeout occurred, force close
+                    // Handle result (success or failure)
+                    match graceful_result {
+                        Ok(Ok(())) => {
+                            // Graceful WebSocket shutdown succeeded
+                        }
+                        Ok(Err(_ws_error)) => {
+                            // Graceful WebSocket shutdown failed, force close
+                        }
+                        Err(_timeout_error) => {
+                            // Timeout occurred, force close
+                        }
                     }
                 }
+                WebSocketTransport::Unconnected { .. } => {
+                    // Already disconnected, nothing to do
+                }
             }
-            WebSocketTransport::Unconnected { .. } => {
-                // Already disconnected, nothing to do
-            }
-        }
 
-        // Set to unconnected state (we don't have original URL info to restore, so create a dummy one)
-        *self = WebSocketTransport::Unconnected {
-            url: "ws://disconnected".to_string(),
-            headers: None,
-            config: ClientConfig::default(),
-        };
+            // Set to unconnected state (we don't have original URL info to restore, so create a dummy one)
+            *self = WebSocketTransport::Unconnected {
+                url: "ws://disconnected".to_string(),
+                headers: None,
+                config: ClientConfig::default(),
+            };
+        })
     }
 }

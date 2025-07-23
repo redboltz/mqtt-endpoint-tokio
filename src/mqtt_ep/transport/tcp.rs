@@ -22,8 +22,10 @@
  * SOFTWARE.
  */
 use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
+use std::future::Future;
 use std::io::IoSlice;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{Duration, timeout};
@@ -65,7 +67,8 @@ impl TcpTransport {
 
     /// Legacy method for backward compatibility
     pub async fn connect(addr: &str) -> Result<Self, TransportError> {
-        let addr: SocketAddr = addr.parse()
+        let addr: SocketAddr = addr
+            .parse()
             .map_err(|e| TransportError::Handshake(format!("Invalid address: {}", e)))?;
         let mut transport = Self::new(addr);
         transport.handshake().await?;
@@ -77,7 +80,8 @@ impl TcpTransport {
         addr: &str,
         config: &ClientConfig,
     ) -> Result<Self, TransportError> {
-        let addr: SocketAddr = addr.parse()
+        let addr: SocketAddr = addr
+            .parse()
             .map_err(|e| TransportError::Handshake(format!("Invalid address: {}", e)))?;
         let mut transport = Self::new_with_config(addr, config.clone());
         transport.handshake().await?;
@@ -102,65 +106,81 @@ impl TcpTransport {
 }
 
 impl TransportOps for TcpTransport {
-    async fn handshake(&mut self) -> Result<(), TransportError> {
-        // If already connected, nothing to do
-        if self.stream.is_some() {
-            return Ok(());
-        }
+    fn handshake<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            // If already connected, nothing to do
+            if self.stream.is_some() {
+                return Ok(());
+            }
 
-        // Perform TCP connection
-        let remote_addr = self.remote_addr.ok_or_else(|| {
-            TransportError::Handshake("No remote address specified".to_string())
-        })?;
+            // Perform TCP connection
+            let remote_addr = self.remote_addr.ok_or_else(|| {
+                TransportError::Handshake("No remote address specified".to_string())
+            })?;
 
-        let stream = timeout(self.config.connect_timeout, TcpStream::connect(remote_addr))
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(TransportError::Io)?;
-
-        self.stream = Some(stream);
-        Ok(())
-    }
-
-    async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
-        let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
-        
-        for buf in buffers {
-            stream
-                .write_all(buf)
+            let stream = timeout(self.config.connect_timeout, TcpStream::connect(remote_addr))
                 .await
+                .map_err(|_| TransportError::Timeout)?
                 .map_err(TransportError::Io)?;
-        }
-        Ok(())
+
+            self.stream = Some(stream);
+            Ok(())
+        })
     }
 
-    async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError> {
-        let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
-        stream.read(buffer).await.map_err(TransportError::Io)
+    fn send<'a>(
+        &'a mut self,
+        buffers: &'a [IoSlice<'a>],
+    ) -> Pin<Box<dyn Future<Output = Result<(), TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
+
+            for buf in buffers {
+                stream.write_all(buf).await.map_err(TransportError::Io)?;
+            }
+            Ok(())
+        })
     }
 
-    async fn shutdown(&mut self, timeout_duration: Duration) {
-        if let Some(ref mut stream) = self.stream {
-            // Try graceful shutdown first with timeout
-            let graceful_result = timeout(timeout_duration, stream.shutdown()).await;
+    fn recv<'a>(
+        &'a mut self,
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<usize, TransportError>> + Send + 'a>> {
+        Box::pin(async move {
+            let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
+            stream.read(buffer).await.map_err(TransportError::Io)
+        })
+    }
 
-            // If graceful shutdown fails or times out, force close the connection
-            match graceful_result {
-                Ok(Ok(())) => {
-                    // Graceful shutdown succeeded
-                }
-                Ok(Err(_io_error)) => {
-                    // Graceful shutdown failed, force close by dropping the stream
-                    // The stream will be closed when it goes out of scope
-                }
-                Err(_timeout_error) => {
-                    // Timeout occurred, force close by dropping the stream
-                    // The stream will be closed when it goes out of scope
+    fn shutdown<'a>(
+        &'a mut self,
+        timeout_duration: Duration,
+    ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>> {
+        Box::pin(async move {
+            if let Some(ref mut stream) = self.stream {
+                // Try graceful shutdown first with timeout
+                let graceful_result = timeout(timeout_duration, stream.shutdown()).await;
+
+                // If graceful shutdown fails or times out, force close the connection
+                match graceful_result {
+                    Ok(Ok(())) => {
+                        // Graceful shutdown succeeded
+                    }
+                    Ok(Err(_io_error)) => {
+                        // Graceful shutdown failed, force close by dropping the stream
+                        // The stream will be closed when it goes out of scope
+                    }
+                    Err(_timeout_error) => {
+                        // Timeout occurred, force close by dropping the stream
+                        // The stream will be closed when it goes out of scope
+                    }
                 }
             }
-        }
-        
-        // Clear the stream to indicate disconnected state
-        self.stream = None;
+
+            // Clear the stream to indicate disconnected state
+            self.stream = None;
+        })
     }
 }
