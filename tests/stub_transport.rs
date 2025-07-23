@@ -43,6 +43,7 @@ pub enum TransportCall {
 
 /// Response configuration for controlling stub behavior
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum TransportResponse {
     HandshakeOk,
     HandshakeErr(TransportError),
@@ -91,6 +92,7 @@ impl StubTransport {
     }
 
     /// Add multiple responses to the queue
+    #[allow(dead_code)]
     pub fn add_responses(&mut self, responses: Vec<TransportResponse>) {
         let mut queue = self.responses.lock().unwrap();
         for response in responses {
@@ -104,6 +106,7 @@ impl StubTransport {
     }
 
     /// Clear all recorded calls
+    #[allow(dead_code)]
     pub fn clear_calls(&self) {
         self.calls.lock().unwrap().clear();
     }

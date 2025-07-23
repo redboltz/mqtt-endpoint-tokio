@@ -23,7 +23,6 @@ use mqtt_endpoint_tokio::mqtt_ep::endpoint::GenericEndpoint;
  * SOFTWARE.
  */
 use mqtt_protocol_core::mqtt;
-use mqtt_protocol_core::mqtt::prelude::*;
 use tokio::io::duplex;
 
 #[tokio::test]
