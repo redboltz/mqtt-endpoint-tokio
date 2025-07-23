@@ -283,7 +283,7 @@ where
 
     /// Create a new endpoint with a pre-connected stream (for backward compatibility with tests)
     /// This method is primarily for tests that use tokio::io::duplex streams
-    pub fn new<S>(version: Version, _stream: S) -> Self 
+    pub fn new<S>(version: Version, _stream: S) -> Self
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
@@ -291,7 +291,7 @@ where
         // The actual connection will happen when methods are called
         // This mimics the old synchronous behavior expected by tests
         let endpoint = Self::new_with_config(version, EndpointConfig::default());
-        
+
         // In the new architecture, we need to connect asynchronously
         // For now, return the disconnected endpoint - tests might need updating
         endpoint
@@ -944,11 +944,11 @@ where
                 // Handle transport receive (only when there are pending recv requests)
                 recv_result = async {
                     if let Some(ref mut t) = transport {
-                        if !pending_recv_requests.is_empty() {
-                            Some(t.recv(&mut read_buffer).await)
-                        } else {
+                        if pending_recv_requests.is_empty() {
                             // No pending recv requests, don't try to receive
                             future::pending().await
+                        } else {
+                            Some(t.recv(&mut read_buffer).await)
                         }
                     } else {
                         // No transport available
@@ -961,10 +961,10 @@ where
                                 // Process received bytes
                                 let mut cursor = std::io::Cursor::new(&read_buffer[..n]);
                                 let events = connection.recv(&mut cursor);
-                                
+
                                 // Check events for received packets matching pending filters
                                 Self::process_received_packets(&events, &mut pending_recv_requests);
-                                
+
                                 // Process other connection events
                                 if let Some(ref mut t) = transport {
                                     Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
@@ -1000,7 +1000,7 @@ where
         pending_recv_requests: &mut Vec<(PacketFilter, oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>)>
     ) {
         let mut satisfied_indices = Vec::new();
-        
+
         for event in events {
             if let GenericEvent::NotifyPacketReceived(packet) = event {
                 // Find first matching filter
@@ -1012,7 +1012,7 @@ where
                 }
             }
         }
-        
+
         // Remove satisfied requests in reverse order and send responses
         for &index in satisfied_indices.iter().rev() {
             let (_, response_tx) = pending_recv_requests.swap_remove(index);
