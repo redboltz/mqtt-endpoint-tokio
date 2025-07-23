@@ -23,34 +23,65 @@
  */
 use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
 use std::io::IoSlice;
+use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::{Duration, timeout};
 
 #[derive(Debug)]
 pub struct TcpTransport {
-    stream: TcpStream,
+    stream: Option<TcpStream>,
+    remote_addr: Option<SocketAddr>,
+    config: ClientConfig,
 }
 
 impl TcpTransport {
+    /// Create a new TcpTransport for the given remote address (not yet connected)
+    pub fn new(remote_addr: SocketAddr) -> Self {
+        Self {
+            stream: None,
+            remote_addr: Some(remote_addr),
+            config: ClientConfig::default(),
+        }
+    }
+
+    /// Create a new TcpTransport for the given remote address with custom config
+    pub fn new_with_config(remote_addr: SocketAddr, config: ClientConfig) -> Self {
+        Self {
+            stream: None,
+            remote_addr: Some(remote_addr),
+            config,
+        }
+    }
+
+    /// Create TcpTransport from an already established stream
     pub fn from_stream(stream: TcpStream) -> Self {
-        Self { stream }
+        Self {
+            stream: Some(stream),
+            remote_addr: None,
+            config: ClientConfig::default(),
+        }
     }
 
+    /// Legacy method for backward compatibility
     pub async fn connect(addr: &str) -> Result<Self, TransportError> {
-        Self::connect_with_config(addr, &ClientConfig::default()).await
+        let addr: SocketAddr = addr.parse()
+            .map_err(|e| TransportError::Handshake(format!("Invalid address: {}", e)))?;
+        let mut transport = Self::new(addr);
+        transport.handshake().await?;
+        Ok(transport)
     }
 
+    /// Legacy method for backward compatibility
     pub async fn connect_with_config(
         addr: &str,
         config: &ClientConfig,
     ) -> Result<Self, TransportError> {
-        let stream = timeout(config.connect_timeout, TcpStream::connect(addr))
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(TransportError::Io)?;
-
-        Ok(Self::from_stream(stream))
+        let addr: SocketAddr = addr.parse()
+            .map_err(|e| TransportError::Handshake(format!("Invalid address: {}", e)))?;
+        let mut transport = Self::new_with_config(addr, config.clone());
+        transport.handshake().await?;
+        Ok(transport)
     }
 
     pub async fn accept(listener: &TcpListener) -> Result<Self, TransportError> {
@@ -71,9 +102,31 @@ impl TcpTransport {
 }
 
 impl TransportOps for TcpTransport {
+    async fn handshake(&mut self) -> Result<(), TransportError> {
+        // If already connected, nothing to do
+        if self.stream.is_some() {
+            return Ok(());
+        }
+
+        // Perform TCP connection
+        let remote_addr = self.remote_addr.ok_or_else(|| {
+            TransportError::Handshake("No remote address specified".to_string())
+        })?;
+
+        let stream = timeout(self.config.connect_timeout, TcpStream::connect(remote_addr))
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(TransportError::Io)?;
+
+        self.stream = Some(stream);
+        Ok(())
+    }
+
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
+        let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
+        
         for buf in buffers {
-            self.stream
+            stream
                 .write_all(buf)
                 .await
                 .map_err(TransportError::Io)?;
@@ -82,26 +135,32 @@ impl TransportOps for TcpTransport {
     }
 
     async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError> {
-        self.stream.read(buffer).await.map_err(TransportError::Io)
+        let stream = self.stream.as_mut().ok_or(TransportError::NotConnected)?;
+        stream.read(buffer).await.map_err(TransportError::Io)
     }
 
     async fn shutdown(&mut self, timeout_duration: Duration) {
-        // Try graceful shutdown first with timeout
-        let graceful_result = timeout(timeout_duration, self.stream.shutdown()).await;
+        if let Some(ref mut stream) = self.stream {
+            // Try graceful shutdown first with timeout
+            let graceful_result = timeout(timeout_duration, stream.shutdown()).await;
 
-        // If graceful shutdown fails or times out, force close the connection
-        match graceful_result {
-            Ok(Ok(())) => {
-                // Graceful shutdown succeeded
-            }
-            Ok(Err(_io_error)) => {
-                // Graceful shutdown failed, force close by dropping the stream
-                // The stream will be closed when it goes out of scope
-            }
-            Err(_timeout_error) => {
-                // Timeout occurred, force close by dropping the stream
-                // The stream will be closed when it goes out of scope
+            // If graceful shutdown fails or times out, force close the connection
+            match graceful_result {
+                Ok(Ok(())) => {
+                    // Graceful shutdown succeeded
+                }
+                Ok(Err(_io_error)) => {
+                    // Graceful shutdown failed, force close by dropping the stream
+                    // The stream will be closed when it goes out of scope
+                }
+                Err(_timeout_error) => {
+                    // Timeout occurred, force close by dropping the stream
+                    // The stream will be closed when it goes out of scope
+                }
             }
         }
+        
+        // Clear the stream to indicate disconnected state
+        self.stream = None;
     }
 }

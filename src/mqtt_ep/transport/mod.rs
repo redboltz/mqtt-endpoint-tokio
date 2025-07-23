@@ -47,6 +47,7 @@ pub enum TransportError {
     WebSocket(Box<dyn std::error::Error + Send + Sync>),
     Timeout,
     Handshake(String),
+    NotConnected,
 }
 
 impl std::fmt::Display for TransportError {
@@ -57,6 +58,7 @@ impl std::fmt::Display for TransportError {
             TransportError::WebSocket(e) => write!(f, "WebSocket error: {}", e),
             TransportError::Timeout => write!(f, "Operation timed out"),
             TransportError::Handshake(msg) => write!(f, "Handshake failed: {}", msg),
+            TransportError::NotConnected => write!(f, "Transport not connected"),
         }
     }
 }
@@ -70,40 +72,60 @@ impl From<std::io::Error> for TransportError {
 }
 
 pub trait TransportOps {
-    async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError>;
-    async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError>;
-    async fn shutdown(&mut self, timeout: Duration);
+    /// Perform transport layer handshake (connection establishment)
+    fn handshake(&mut self) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
+    fn send(&mut self, buffers: &[IoSlice<'_>]) -> impl std::future::Future<Output = Result<(), TransportError>> + Send;
+    fn recv(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = Result<usize, TransportError>> + Send;
+    fn shutdown(&mut self, timeout: Duration) -> impl std::future::Future<Output = ()> + Send;
 }
 
 impl TransportOps for Transport {
-    async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
-        match self {
-            Transport::Tcp(t) => t.send(buffers).await,
-            Transport::Tls(t) => t.send(buffers).await,
-            Transport::WebSocket(t) => t.send(buffers).await,
-            Transport::WebSocketTls(t) => t.send(buffers).await,
+    fn handshake(&mut self) -> impl std::future::Future<Output = Result<(), TransportError>> + Send {
+        async move {
+            match self {
+                Transport::Tcp(t) => t.handshake().await,
+                Transport::Tls(t) => t.handshake().await,
+                Transport::WebSocket(t) => t.handshake().await,
+                Transport::WebSocketTls(t) => t.handshake().await,
+            }
         }
     }
 
-    async fn recv(&mut self, buffer: &mut [u8]) -> Result<usize, TransportError> {
-        match self {
-            Transport::Tcp(t) => t.recv(buffer).await,
-            Transport::Tls(t) => t.recv(buffer).await,
-            Transport::WebSocket(t) => t.recv(buffer).await,
-            Transport::WebSocketTls(t) => t.recv(buffer).await,
+    fn send(&mut self, buffers: &[IoSlice<'_>]) -> impl std::future::Future<Output = Result<(), TransportError>> + Send {
+        async move {
+            match self {
+                Transport::Tcp(t) => t.send(buffers).await,
+                Transport::Tls(t) => t.send(buffers).await,
+                Transport::WebSocket(t) => t.send(buffers).await,
+                Transport::WebSocketTls(t) => t.send(buffers).await,
+            }
         }
     }
 
-    async fn shutdown(&mut self, timeout: Duration) {
-        match self {
-            Transport::Tcp(t) => t.shutdown(timeout).await,
-            Transport::Tls(t) => t.shutdown(timeout).await,
-            Transport::WebSocket(t) => t.shutdown(timeout).await,
-            Transport::WebSocketTls(t) => t.shutdown(timeout).await,
+    fn recv(&mut self, buffer: &mut [u8]) -> impl std::future::Future<Output = Result<usize, TransportError>> + Send {
+        async move {
+            match self {
+                Transport::Tcp(t) => t.recv(buffer).await,
+                Transport::Tls(t) => t.recv(buffer).await,
+                Transport::WebSocket(t) => t.recv(buffer).await,
+                Transport::WebSocketTls(t) => t.recv(buffer).await,
+            }
+        }
+    }
+
+    fn shutdown(&mut self, timeout: Duration) -> impl std::future::Future<Output = ()> + Send {
+        async move {
+            match self {
+                Transport::Tcp(t) => t.shutdown(timeout).await,
+                Transport::Tls(t) => t.shutdown(timeout).await,
+                Transport::WebSocket(t) => t.shutdown(timeout).await,
+                Transport::WebSocketTls(t) => t.shutdown(timeout).await,
+            }
         }
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct ClientConfig {
     pub connect_timeout: Duration,
     pub shutdown_timeout: Duration,

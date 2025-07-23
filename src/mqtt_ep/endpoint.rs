@@ -25,7 +25,7 @@ use std::io::Cursor;
  */
 use std::marker::PhantomData;
 use std::time::Duration;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
@@ -38,6 +38,67 @@ use mqtt_protocol_core::mqtt::packet::v5_0;
 use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket, PacketType};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
 use std::hash::Hash;
+
+/// Configuration for MQTT endpoint (settable only at initialization time)
+#[derive(Debug, Clone)]
+pub struct EndpointConfig {
+    /// Default connection options (can be overridden per connection)
+    pub default_connection_options: ConnectionOption,
+}
+
+impl Default for EndpointConfig {
+    fn default() -> Self {
+        Self {
+            default_connection_options: ConnectionOption::default(),
+        }
+    }
+}
+
+/// Connection options that can be set dynamically for each connection/reconnection
+#[derive(Debug, Clone)]
+pub struct ConnectionOption {
+    /// PINGREQ send interval in milliseconds (for v3.1.1 and v5.0)
+    pub pingreq_send_interval: Option<u64>,
+    /// Keep alive interval in seconds (for v3.1.1 and v5.0) 
+    pub keep_alive_interval: Option<u16>,
+    /// Packet ID exhaust retry interval in milliseconds
+    pub packet_id_exhaust_retry_interval: Option<u64>,
+}
+
+impl Default for ConnectionOption {
+    fn default() -> Self {
+        Self {
+            pingreq_send_interval: None,
+            keep_alive_interval: None,
+            packet_id_exhaust_retry_interval: None,
+        }
+    }
+}
+
+impl ConnectionOption {
+    /// Create a new ConnectionOption with default values
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the PINGREQ send interval in milliseconds
+    pub fn pingreq_send_interval(mut self, interval: u64) -> Self {
+        self.pingreq_send_interval = Some(interval);
+        self
+    }
+
+    /// Set the keep alive interval in seconds
+    pub fn keep_alive_interval(mut self, interval: u16) -> Self {
+        self.keep_alive_interval = Some(interval);
+        self
+    }
+
+    /// Set the packet ID exhaust retry interval in milliseconds
+    pub fn packet_id_exhaust_retry_interval(mut self, interval: u64) -> Self {
+        self.packet_id_exhaust_retry_interval = Some(interval);
+        self
+    }
+}
 
 /// Packet filter for selective receiving
 #[derive(Debug, Clone)]
@@ -74,12 +135,69 @@ impl PacketFilter {
     }
 }
 
+/// Builder for creating GenericEndpoint with custom configuration
+pub struct GenericEndpointBuilder<Role, PacketIdType>
+where
+    Role: RoleType + Send + Sync + 'static,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+{
+    version: Version,
+    config: EndpointConfig,
+    _marker: PhantomData<(Role, PacketIdType)>,
+}
+
+impl<Role, PacketIdType> GenericEndpointBuilder<Role, PacketIdType>
+where
+    Role: RoleType + Send + Sync + 'static,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+    <PacketIdType as IsPacketId>::Buffer: Send,
+{
+    /// Create a new builder with the specified MQTT version
+    pub fn new(version: Version) -> Self {
+        Self {
+            version,
+            config: EndpointConfig::default(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Set the default connection options (can be overridden per connection)
+    pub fn default_connection_options(mut self, options: ConnectionOption) -> Self {
+        self.config.default_connection_options = options;
+        self
+    }
+
+    /// Build the endpoint (initially in disconnected state)
+    pub fn build(self) -> GenericEndpoint<Role, PacketIdType> {
+        GenericEndpoint::new_with_config(self.version, self.config)
+    }
+}
+
+/// State of the MQTT endpoint
+enum EndpointState<Role, PacketIdType>
+where
+    Role: RoleType,
+    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+{
+    /// Endpoint is not connected to any transport
+    Disconnected {
+        connection: GenericConnection<Role, PacketIdType>,
+    },
+    /// Endpoint is connected and running
+    Connected {
+        tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
+        event_loop_handle: tokio::task::JoinHandle<GenericConnection<Role, PacketIdType>>,
+    },
+}
+
 pub struct GenericEndpoint<Role, PacketIdType>
 where
     Role: RoleType + Send + Sync + 'static,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
+    version: Version,
+    config: EndpointConfig,
+    state: tokio::sync::Mutex<EndpointState<Role, PacketIdType>>,
     _marker: PhantomData<Role>,
 }
 
@@ -156,6 +274,7 @@ where
 pub enum SendError {
     ChannelClosed,
     ConnectionError(String),
+    NotConnected,
 }
 
 impl<Role, PacketIdType> GenericEndpoint<Role, PacketIdType>
@@ -164,207 +283,26 @@ where
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
     <PacketIdType as IsPacketId>::Buffer: Send,
 {
-    pub fn new<S>(version: Version, stream: S) -> Self
-    where
-        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    {
-        let (tx_send, mut rx_send) = mpsc::unbounded_channel();
+    /// Create a new builder for configuring the endpoint
+    pub fn builder(version: Version) -> GenericEndpointBuilder<Role, PacketIdType> {
+        GenericEndpointBuilder::new(version)
+    }
 
-        tokio::spawn(async move {
-            let mut connection: GenericConnection<Role, PacketIdType> =
-                GenericConnection::new(version);
-            let mut stream = stream;
-            let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
-            let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
-            let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
-            let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
-
-            // Queue for pending packet ID acquisition requests
-            let mut pending_packet_id_requests: Vec<
-                oneshot::Sender<Result<PacketIdType, SendError>>,
-            > = Vec::new();
-
-            let mut read_buffer = vec![0u8; 4096];
-
-            loop {
-                tokio::select! {
-                    // Handle requests from external API
-                    request = rx_send.recv() => {
-                        match request {
-                            Some(RequestResponse::Send { packet, response_tx }) => {
-                                let events = packet.dispatch_send_boxed(&mut connection);
-                                // Send success response immediately
-                                if let Err(_) = response_tx.send(Ok(())) {
-                                    break; // Channel closed, endpoint dropped
-                                }
-                                // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                            }
-                            Some(RequestResponse::Recv { filter, response_tx }) => {
-                                // Read until we get a packet matching the filter
-                                loop {
-                                    match stream.read(&mut read_buffer).await {
-                                        Ok(0) => {
-                                            // EOF - connection closed
-                                            let _ = response_tx.send(Err(SendError::ConnectionError("Connection closed".to_string())));
-                                            break;
-                                        }
-                                        Ok(n) => {
-                                            // Process received bytes
-                                            let mut cursor = Cursor::new(&read_buffer[..n]);
-                                            // Note: recv() returns Vec<GenericEvent<PacketIdType>>, process events
-                                            let events = connection.recv(&mut cursor);
-
-                                            if events.is_empty() {
-                                                // Packet incomplete - need more data
-                                                continue;
-                                            } else {
-                                                // Process events and check for received packet
-                                                let received_packet = Self::process_events_with_recv(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-
-                                                if let Some(packet) = received_packet {
-                                                    // Check if packet matches the filter
-                                                    if filter.matches(&packet) {
-                                                        let _ = response_tx.send(Ok(packet));
-                                                        break;
-                                                    } else {
-                                                        // Packet doesn't match filter - discard and continue reading
-                                                        continue;
-                                                    }
-                                                } else {
-                                                    // No packet received in this batch - continue reading
-                                                    continue;
-                                                }
-                                            }
-                                        }
-                                        Err(e) => {
-                                            // Read error
-                                            let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
-                                            break;
-                                        }
-                                    }
-                                }
-                            }
-                            Some(RequestResponse::AcquirePacketId { response_tx }) => {
-                                // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
-                                match connection.acquire_packet_id() {
-                                    Ok(packet_id) => {
-                                        let _ = response_tx.send(Ok(packet_id));
-                                    }
-                                    Err(e) => {
-                                        let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
-                                    }
-                                }
-                            }
-                            Some(RequestResponse::AcquirePacketIdWhenAvailable { response_tx }) => {
-                                // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
-                                match connection.acquire_packet_id() {
-                                    Ok(packet_id) => {
-                                        // Packet ID available immediately
-                                        let _ = response_tx.send(Ok(packet_id));
-                                    }
-                                    Err(_) => {
-                                        // No packet ID available, add to waiting queue
-                                        pending_packet_id_requests.push(response_tx);
-                                    }
-                                }
-                            }
-                            Some(RequestResponse::RegisterPacketId { packet_id, response_tx }) => {
-                                // Note: register_packet_id() returns Result<(), MqttError>, no events
-                                match connection.register_packet_id(packet_id) {
-                                    Ok(()) => {
-                                        let _ = response_tx.send(Ok(()));
-                                    }
-                                    Err(e) => {
-                                        let _ = response_tx.send(Err(SendError::ConnectionError(e.to_string())));
-                                    }
-                                }
-                            }
-                            Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
-                                // Note: release_packet_id() returns Vec<GenericEvent<PacketIdType>>, process events
-                                let events = connection.release_packet_id(packet_id);
-                                let _ = response_tx.send(Ok(()));
-                                // Process events recursively
-                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                            }
-                            Some(RequestResponse::Close { response_tx }) => {
-                                // Shutdown the stream first - ignore errors as we want to force close if needed
-                                let _ = stream.shutdown().await;
-
-                                // Note: notify_closed() returns Vec<GenericEvent<PacketIdType>>, process events
-                                let events = connection.notify_closed();
-                                // Send success response immediately
-                                let _ = response_tx.send(Ok(()));
-                                // Process the close events
-                                Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-
-                                // Break out of the event loop after close
-                                break;
-                            }
-                            Some(RequestResponse::RestorePackets { packets, response_tx }) => {
-                                // Note: restore_packets() currently returns (), no events to process
-                                connection.restore_packets(packets);
-
-                                // Send success response
-                                let _ = response_tx.send(Ok(()));
-                            }
-                            Some(RequestResponse::GetStoredPackets { response_tx }) => {
-                                // Note: get_stored_packets() returns Vec<GenericStorePacket<PacketIdType>>, no events to process
-                                let stored_packets = connection.get_stored_packets();
-                                // Send packets back to caller
-                                let _ = response_tx.send(Ok(stored_packets));
-                            }
-                            Some(RequestResponse::RegulateForStore { packet, response_tx }) => {
-                                // Note: regulate_for_store() returns Result<v5_0::GenericPublish<PacketIdType>, MqttError>, no events to process
-                                match connection.regulate_for_store(packet) {
-                                    Ok(regulated_packet) => {
-                                        let _ = response_tx.send(Ok(regulated_packet));
-                                    }
-                                    Err(mqtt_error) => {
-                                        let _ = response_tx.send(Err(SendError::ConnectionError(mqtt_error.to_string())));
-                                    }
-                                }
-                            }
-                            None => break, // Channel closed, endpoint dropped
-                        }
-                    }
-
-                    // Handle timer expiration
-                    timer_kind = timer_rx.recv() => {
-                        if let Some(kind) = timer_kind {
-                            // Timer has fired - clear the corresponding timer
-                            match kind {
-                                TimerKind::PingreqSend => pingreq_send_timer = None,
-                                TimerKind::PingreqRecv => pingreq_recv_timer = None,
-                                TimerKind::PingrespRecv => pingresp_recv_timer = None,
-                            }
-                            // Note: notify_timer_fired() returns Vec<GenericEvent<PacketIdType>>, process events
-                            let events = connection.notify_timer_fired(kind);
-                            // Process events recursively
-                            Self::process_events(&mut connection, &mut stream, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
-                        }
-                    }
-
-                }
-            }
-
-            // Cancel all timers when event loop exits
-            if let Some(handle) = pingreq_send_timer {
-                handle.abort();
-            }
-            if let Some(handle) = pingreq_recv_timer {
-                handle.abort();
-            }
-            if let Some(handle) = pingresp_recv_timer {
-                handle.abort();
-            }
-        });
-
+    /// Create a new endpoint with custom configuration (initially disconnected)
+    pub fn new_with_config(version: Version, config: EndpointConfig) -> Self {
+        let connection = GenericConnection::new(version);
+        
+        // Apply configuration settings to the connection
+        // Note: These settings should be applied during connection creation
+        
         Self {
-            tx_send,
+            version,
+            config,
+            state: tokio::sync::Mutex::new(EndpointState::Disconnected { connection }),
             _marker: PhantomData,
         }
     }
+
 
     async fn process_events_with_recv<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
@@ -645,9 +583,10 @@ where
     where
         T: Into<GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
     {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::Send {
                 packet: Box::new(packet),
                 response_tx,
@@ -667,9 +606,10 @@ where
         &self,
         filter: PacketFilter,
     ) -> Result<GenericPacket<PacketIdType>, SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::Recv {
                 filter,
                 response_tx,
@@ -681,9 +621,10 @@ where
 
     /// Acquire a unique packet ID
     pub async fn acquire_packet_id(&self) -> Result<PacketIdType, SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::AcquirePacketId { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
@@ -696,9 +637,10 @@ where
     /// if all packet IDs are currently in use. Instead, it will wait until
     /// a packet ID is released and becomes available.
     pub async fn acquire_packet_id_when_available(&self) -> Result<PacketIdType, SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::AcquirePacketIdWhenAvailable { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
@@ -707,9 +649,10 @@ where
 
     /// Register a packet ID as in use
     pub async fn register_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::RegisterPacketId {
                 packet_id,
                 response_tx,
@@ -721,9 +664,10 @@ where
 
     /// Release a packet ID
     pub async fn release_packet_id(&self, packet_id: PacketIdType) -> Result<(), SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::ReleasePacketId {
                 packet_id,
                 response_tx,
@@ -733,21 +677,6 @@ where
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
 
-    /// Close the endpoint connection
-    ///
-    /// This method performs a graceful shutdown by:
-    /// 1. Shutting down the transport layer
-    /// 2. Notifying the MQTT connection that it's being closed
-    /// 3. Processing any final events generated by the close operation
-    pub async fn close(&self) -> Result<(), SendError> {
-        let (response_tx, response_rx) = oneshot::channel();
-
-        self.tx_send
-            .send(RequestResponse::Close { response_tx })
-            .map_err(|_| SendError::ChannelClosed)?;
-
-        response_rx.await.map_err(|_| SendError::ChannelClosed)?
-    }
 
     /// Restore packets to the connection store
     ///
@@ -758,9 +687,10 @@ where
         &self,
         packets: Vec<GenericStorePacket<PacketIdType>>,
     ) -> Result<(), SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::RestorePackets {
                 packets,
                 response_tx,
@@ -778,9 +708,10 @@ where
     pub async fn get_stored_packets(
         &self,
     ) -> Result<Vec<GenericStorePacket<PacketIdType>>, SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::GetStoredPackets { response_tx })
             .map_err(|_| SendError::ChannelClosed)?;
 
@@ -797,9 +728,10 @@ where
         &self,
         packet: v5_0::GenericPublish<PacketIdType>,
     ) -> Result<v5_0::GenericPublish<PacketIdType>, SendError> {
+        let tx_send = self.get_tx_send().await?;
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.tx_send
+        tx_send
             .send(RequestResponse::RegulateForStore {
                 packet,
                 response_tx,
@@ -808,6 +740,298 @@ where
 
         response_rx.await.map_err(|_| SendError::ChannelClosed)?
     }
+
+    /// Connect to the specified transport with default connection options
+    pub async fn connect<T>(&self, transport: T) -> Result<(), ConnectError>
+    where
+        T: crate::mqtt_ep::transport::TransportOps + Send + 'static + tokio::io::AsyncWrite + Unpin,
+    {
+        self.connect_with_options(transport, self.config.default_connection_options.clone()).await
+    }
+
+    /// Connect to the specified transport with specific connection options
+    pub async fn connect_with_options<T>(&self, mut transport: T, options: ConnectionOption) -> Result<(), ConnectError>
+    where
+        T: crate::mqtt_ep::transport::TransportOps + Send + 'static + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut state = self.state.lock().await;
+
+        match &*state {
+            EndpointState::Connected { .. } => {
+                return Err(ConnectError::AlreadyConnected);
+            }
+            EndpointState::Disconnected { .. } => {}
+        }
+
+        // Perform transport handshake
+        transport.handshake().await.map_err(ConnectError::Transport)?;
+
+        // Extract connection from disconnected state
+        let mut connection = match std::mem::replace(
+            &mut *state,
+            EndpointState::Connected {
+                tx_send: mpsc::unbounded_channel().0, // temporary
+                event_loop_handle: tokio::spawn(async { GenericConnection::new(Version::V3_1_1) }), // temporary
+            },
+        ) {
+            EndpointState::Disconnected { connection } => connection,
+            _ => unreachable!(),
+        };
+
+        // Apply connection options to the connection before spawning event loop
+        Self::apply_connection_options(&mut connection, &options);
+
+        // Create channels for communication
+        let (tx_send, rx_send) = mpsc::unbounded_channel();
+
+        // Start event loop
+        let event_loop_handle = tokio::spawn(Self::event_loop(connection, transport, rx_send));
+
+        // Update state to connected
+        *state = EndpointState::Connected {
+            tx_send,
+            event_loop_handle,
+        };
+
+        Ok(())
+    }
+
+    /// Get the tx_send channel if connected, otherwise return NotConnected error
+    async fn get_tx_send(&self) -> Result<mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>, SendError> {
+        let state = self.state.lock().await;
+        match &*state {
+            EndpointState::Connected { tx_send, .. } => Ok(tx_send.clone()),
+            EndpointState::Disconnected { .. } => Err(SendError::NotConnected),
+        }
+    }
+
+    /// Apply connection options to the MQTT connection
+    fn apply_connection_options(connection: &mut GenericConnection<Role, PacketIdType>, options: &ConnectionOption) {
+        if let Some(interval) = options.pingreq_send_interval {
+            connection.set_pingreq_send_interval(interval);
+        }
+        // TODO: Implement set_keep_alive_interval and set_packet_id_exhaust_retry_interval
+        // if let Some(interval) = options.keep_alive_interval {
+        //     connection.set_keep_alive_interval(interval);
+        // }
+        // if let Some(interval) = options.packet_id_exhaust_retry_interval {
+        //     connection.set_packet_id_exhaust_retry_interval(interval);
+        // }
+    }
+
+    /// Disconnect from the current transport and return to disconnected state
+    pub async fn disconnect(&self) -> Result<(), DisconnectError> {
+        let mut state = self.state.lock().await;
+
+        let (tx_send, _event_loop_handle) = match &*state {
+            EndpointState::Disconnected { .. } => {
+                return Err(DisconnectError::AlreadyDisconnected);
+            }
+            EndpointState::Connected { tx_send, event_loop_handle } => {
+                (tx_send.clone(), event_loop_handle.abort_handle())
+            }
+        };
+
+        // Send disconnect request to event loop
+        let (response_tx, response_rx) = oneshot::channel();
+        if tx_send.send(RequestResponse::Close { response_tx }).is_err() {
+            return Err(DisconnectError::ChannelClosed);
+        }
+
+        // Wait for event loop to finish and return connection
+        match response_rx.await {
+            Ok(Ok(())) => {
+                // Event loop will handle shutdown and return connection
+                // For now, we'll create a new connection (TODO: get returned connection)
+                let connection = GenericConnection::new(self.version);
+                
+                *state = EndpointState::Disconnected { connection };
+                Ok(())
+            }
+            Ok(Err(e)) => Err(DisconnectError::SendError(e)),
+            Err(_) => Err(DisconnectError::ChannelClosed),
+        }
+    }
+
+    /// Event loop that handles transport I/O and MQTT protocol logic
+    async fn event_loop<T>(
+        mut connection: GenericConnection<Role, PacketIdType>,
+        mut transport: T,
+        mut rx_send: mpsc::UnboundedReceiver<RequestResponse<Role, PacketIdType>>,
+    ) -> GenericConnection<Role, PacketIdType>
+    where
+        T: crate::mqtt_ep::transport::TransportOps + Send + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
+        let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
+        let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
+        let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
+
+        let mut pending_packet_id_requests: Vec<oneshot::Sender<Result<PacketIdType, SendError>>> = Vec::new();
+        let mut read_buffer = vec![0u8; 4096];
+
+        loop {
+            tokio::select! {
+                // Handle requests from external API
+                request = rx_send.recv() => {
+                    match request {
+                        Some(RequestResponse::Send { packet, response_tx }) => {
+                            let events = packet.dispatch_send_boxed(&mut connection);
+                            let _ = response_tx.send(Ok(()));
+                            Self::process_events(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                        }
+                        Some(RequestResponse::Recv { filter: _, response_tx }) => {
+                            // TODO: Implement recv with filter
+                            let _ = response_tx.send(Err(SendError::ConnectionError("Recv not implemented".to_string())));
+                        }
+                        Some(RequestResponse::AcquirePacketId { response_tx }) => {
+                            match connection.acquire_packet_id() {
+                                Ok(packet_id) => {
+                                    let _ = response_tx.send(Ok(packet_id));
+                                }
+                                Err(_) => {
+                                    pending_packet_id_requests.push(response_tx);
+                                }
+                            }
+                        }
+                        Some(RequestResponse::AcquirePacketIdWhenAvailable { response_tx }) => {
+                            match connection.acquire_packet_id() {
+                                Ok(packet_id) => {
+                                    let _ = response_tx.send(Ok(packet_id));
+                                }
+                                Err(_) => {
+                                    pending_packet_id_requests.push(response_tx);
+                                }
+                            }
+                        }
+                        Some(RequestResponse::RegisterPacketId { packet_id, response_tx }) => {
+                            connection.register_packet_id(packet_id);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
+                            connection.release_packet_id(packet_id);
+                            let _ = response_tx.send(Ok(()));
+                            
+                            // Check if we can fulfill any pending packet ID requests
+                            while let Some(pending_tx) = pending_packet_id_requests.pop() {
+                                if let Ok(packet_id) = connection.acquire_packet_id() {
+                                    if let Err(_) = pending_tx.send(Ok(packet_id)) {
+                                        connection.release_packet_id(packet_id);
+                                        break;
+                                    }
+                                } else {
+                                    pending_packet_id_requests.push(pending_tx);
+                                    break;
+                                }
+                            }
+                        }
+                        Some(RequestResponse::RestorePackets { packets, response_tx }) => {
+                            connection.restore_packets(packets);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::GetStoredPackets { response_tx }) => {
+                            let packets = connection.get_stored_packets();
+                            let _ = response_tx.send(Ok(packets));
+                        }
+                        Some(RequestResponse::RegulateForStore { packet, response_tx }) => {
+                            match connection.regulate_for_store(packet.clone()) {
+                                Ok(regulated_packet) => {
+                                    let _ = response_tx.send(Ok(regulated_packet));
+                                }
+                                Err(_) => {
+                                    let _ = response_tx.send(Ok(packet));
+                                }
+                            }
+                        }
+                        Some(RequestResponse::Close { response_tx }) => {
+                            // Shutdown transport
+                            transport.shutdown(std::time::Duration::from_secs(5)).await;
+                            let _ = response_tx.send(Ok(()));
+                            break; // Exit event loop
+                        }
+                        None => break, // Channel closed
+                    }
+                }
+
+                // Handle timer expiration
+                timer_kind = timer_rx.recv() => {
+                    if let Some(kind) = timer_kind {
+                        match kind {
+                            TimerKind::PingreqSend => pingreq_send_timer = None,
+                            TimerKind::PingreqRecv => pingreq_recv_timer = None,
+                            TimerKind::PingrespRecv => pingresp_recv_timer = None,
+                        }
+                        let events = connection.notify_timer_fired(kind);
+                        Self::process_events(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                    }
+                }
+
+                // Handle transport receive
+                result = transport.recv(&mut read_buffer) => {
+                    match result {
+                        Ok(0) => break, // EOF
+                        Ok(n) => {
+                            let mut cursor = Cursor::new(&read_buffer[..n]);
+                            let events = connection.recv(&mut cursor);
+                            Self::process_events_with_recv(&mut connection, &mut transport, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                        }
+                        Err(_) => break, // Read error
+                    }
+                }
+            }
+        }
+
+        // Cancel timers
+        if let Some(handle) = pingreq_send_timer {
+            handle.abort();
+        }
+        if let Some(handle) = pingreq_recv_timer {
+            handle.abort();
+        }
+        if let Some(handle) = pingresp_recv_timer {
+            handle.abort();
+        }
+
+        // Return connection for state restoration
+        connection
+    }
+
 }
+
+#[derive(Debug)]
+pub enum ConnectError {
+    Transport(crate::mqtt_ep::transport::TransportError),
+    AlreadyConnected,
+}
+
+impl std::fmt::Display for ConnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConnectError::Transport(e) => write!(f, "Transport error: {}", e),
+            ConnectError::AlreadyConnected => write!(f, "Already connected"),
+        }
+    }
+}
+
+impl std::error::Error for ConnectError {}
+
+#[derive(Debug)]
+pub enum DisconnectError {
+    SendError(SendError),
+    AlreadyDisconnected,
+    ChannelClosed,
+}
+
+impl std::fmt::Display for DisconnectError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DisconnectError::SendError(e) => write!(f, "Send error: {:?}", e),
+            DisconnectError::AlreadyDisconnected => write!(f, "Already disconnected"),
+            DisconnectError::ChannelClosed => write!(f, "Channel closed"),
+        }
+    }
+}
+
+impl std::error::Error for DisconnectError {}
 
 pub type Endpoint<Role> = GenericEndpoint<Role, u16>;

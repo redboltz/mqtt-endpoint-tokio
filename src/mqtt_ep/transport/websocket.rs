@@ -22,6 +22,7 @@
  * SOFTWARE.
  */
 use super::{ClientConfig, ServerConfig, TransportError, TransportOps};
+use std::collections::HashMap;
 use std::io::IoSlice;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
@@ -37,6 +38,11 @@ use url::Url;
 pub enum WebSocketTransport {
     Plain(WebSocketAdapter<MaybeTlsStream<TcpStream>>),
     Tls(WebSocketAdapter<tokio_rustls::server::TlsStream<TcpStream>>),
+    Unconnected {
+        url: String,
+        headers: Option<HashMap<String, String>>,
+        config: ClientConfig,
+    },
 }
 
 #[derive(Debug)]
@@ -47,32 +53,53 @@ pub struct WebSocketAdapter<S> {
 }
 
 impl WebSocketTransport {
+    /// Create a new WebSocketTransport for the given URL (not yet connected)
+    pub fn new(url: String) -> Self {
+        Self::Unconnected {
+            url,
+            headers: None,
+            config: ClientConfig::default(),
+        }
+    }
+
+    /// Create a new WebSocketTransport with custom config and headers
+    pub fn new_with_config(
+        url: String,
+        config: ClientConfig,
+        headers: Option<HashMap<String, String>>,
+    ) -> Self {
+        Self::Unconnected {
+            url,
+            headers,
+            config,
+        }
+    }
+
+    /// Create WebSocketTransport from an already established plain WebSocket stream
     pub fn from_stream(ws: WebSocketStream<MaybeTlsStream<TcpStream>>) -> Self {
         Self::Plain(WebSocketAdapter::new(ws))
     }
 
+    /// Create WebSocketTransport from an already established TLS WebSocket stream
     pub fn from_tls_stream(
         ws: WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>,
     ) -> Self {
         Self::Tls(WebSocketAdapter::new(ws))
     }
 
+    /// Legacy method for backward compatibility
     pub async fn connect(uri: &str) -> Result<Self, TransportError> {
         Self::connect_with_config(uri, &ClientConfig::default()).await
     }
 
+    /// Legacy method for backward compatibility
     pub async fn connect_with_config(
         uri: &str,
         config: &ClientConfig,
     ) -> Result<Self, TransportError> {
-        let url = Url::parse(uri).map_err(|e| TransportError::WebSocket(Box::new(e)))?;
-
-        let (ws_stream, _response) = timeout(config.connect_timeout, connect_async(url))
-            .await
-            .map_err(|_| TransportError::Timeout)?
-            .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
-
-        Ok(Self::from_stream(ws_stream))
+        let mut transport = Self::new_with_config(uri.to_string(), config.clone(), None);
+        transport.handshake().await?;
+        Ok(transport)
     }
 
     pub async fn accept(listener: &TcpListener) -> Result<Self, TransportError> {
@@ -173,6 +200,38 @@ impl<S> WebSocketAdapter<S> {
 }
 
 impl TransportOps for WebSocketTransport {
+    async fn handshake(&mut self) -> Result<(), TransportError> {
+        match self {
+            // Already connected
+            WebSocketTransport::Plain(_) | WebSocketTransport::Tls(_) => {
+                return Ok(());
+            }
+            // Need to establish connection
+            WebSocketTransport::Unconnected { url, headers, config } => {
+                // Parse URL
+                let parsed_url = Url::parse(url)
+                    .map_err(|e| TransportError::Handshake(format!("Invalid URL: {}", e)))?;
+
+                // For now, ignore custom headers (simplified implementation)
+                // In a full implementation, you'd need to create a proper Request with headers
+                let _ = headers; // Suppress unused warning
+
+                // Establish WebSocket connection
+                let (ws_stream, _response) = timeout(
+                    config.connect_timeout,
+                    connect_async(parsed_url),
+                )
+                .await
+                .map_err(|_| TransportError::Timeout)?
+                .map_err(|e| TransportError::WebSocket(Box::new(e)))?;
+
+                // Update self to connected state
+                *self = Self::Plain(WebSocketAdapter::new(ws_stream));
+                Ok(())
+            }
+        }
+    }
+
     async fn send(&mut self, buffers: &[IoSlice<'_>]) -> Result<(), TransportError> {
         let mut combined = Vec::new();
         for buf in buffers {
@@ -197,6 +256,9 @@ impl TransportOps for WebSocketTransport {
                     .send(message)
                     .await
                     .map_err(|e| TransportError::WebSocket(Box::new(e)))
+            }
+            WebSocketTransport::Unconnected { .. } => {
+                Err(TransportError::NotConnected)
             }
         }
     }
@@ -233,43 +295,72 @@ impl TransportOps for WebSocketTransport {
 
                 Ok(to_copy)
             }
+            WebSocketTransport::Unconnected { .. } => {
+                Err(TransportError::NotConnected)
+            }
         }
     }
 
     async fn shutdown(&mut self, timeout_duration: Duration) {
         use futures_util::SinkExt;
 
-        // Try graceful WebSocket shutdown first with timeout
-        let graceful_result = timeout(timeout_duration, async {
-            match self {
-                WebSocketTransport::Plain(adapter) => {
+        match self {
+            WebSocketTransport::Plain(adapter) => {
+                // Try graceful WebSocket shutdown first with timeout
+                let graceful_result = timeout(timeout_duration, async {
                     // Send close frame and wait for acknowledgment
                     adapter.ws.send(Message::Close(None)).await?;
                     adapter.ws.close(None).await?;
-                }
-                WebSocketTransport::Tls(adapter) => {
-                    // Send close frame and wait for acknowledgment
-                    adapter.ws.send(Message::Close(None)).await?;
-                    adapter.ws.close(None).await?;
-                }
-            }
-            Ok::<(), WsError>(())
-        })
-        .await;
+                    Ok::<(), WsError>(())
+                })
+                .await;
 
-        // If graceful shutdown fails or times out, force close the connection
-        match graceful_result {
-            Ok(Ok(())) => {
-                // Graceful WebSocket shutdown succeeded
+                // Handle result (success or failure)
+                match graceful_result {
+                    Ok(Ok(())) => {
+                        // Graceful WebSocket shutdown succeeded
+                    }
+                    Ok(Err(_ws_error)) => {
+                        // Graceful WebSocket shutdown failed, force close
+                    }
+                    Err(_timeout_error) => {
+                        // Timeout occurred, force close
+                    }
+                }
             }
-            Ok(Err(_ws_error)) => {
-                // Graceful WebSocket shutdown failed, force close by dropping the stream
-                // The WebSocket connection will be closed when it goes out of scope
+            WebSocketTransport::Tls(adapter) => {
+                // Try graceful WebSocket shutdown first with timeout
+                let graceful_result = timeout(timeout_duration, async {
+                    // Send close frame and wait for acknowledgment
+                    adapter.ws.send(Message::Close(None)).await?;
+                    adapter.ws.close(None).await?;
+                    Ok::<(), WsError>(())
+                })
+                .await;
+
+                // Handle result (success or failure)
+                match graceful_result {
+                    Ok(Ok(())) => {
+                        // Graceful WebSocket shutdown succeeded
+                    }
+                    Ok(Err(_ws_error)) => {
+                        // Graceful WebSocket shutdown failed, force close
+                    }
+                    Err(_timeout_error) => {
+                        // Timeout occurred, force close
+                    }
+                }
             }
-            Err(_timeout_error) => {
-                // Timeout occurred, force close by dropping the stream
-                // The WebSocket connection will be closed when it goes out of scope
+            WebSocketTransport::Unconnected { .. } => {
+                // Already disconnected, nothing to do
             }
         }
+
+        // Set to unconnected state (we don't have original URL info to restore, so create a dummy one)
+        *self = WebSocketTransport::Unconnected {
+            url: "ws://disconnected".to_string(),
+            headers: None,
+            config: ClientConfig::default(),
+        };
     }
 }
