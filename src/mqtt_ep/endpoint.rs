@@ -821,7 +821,8 @@ where
                         break; // Only satisfy one request per packet
                     }
                     // If packet doesn't match the first filter, we don't consume any request
-                    // The packet will be "lost" and we continue to receive more packets
+                    // The packet will be "lost" and the select loop will automatically
+                    // call t.recv() again since pending_recv_requests is not empty
                 }
                 break; // Only process the first NotifyPacketReceived event
             }
