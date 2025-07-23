@@ -307,7 +307,7 @@ where
 
     async fn process_events<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
-        stream: &mut S,
+        transport: &mut S,
         pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
@@ -315,7 +315,7 @@ where
         pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
         events: Vec<GenericEvent<PacketIdType>>,
     ) where
-        S: AsyncWrite + Unpin,
+        S: AsyncWrite + Unpin + crate::mqtt_ep::transport::TransportOps,
     {
         for event in events {
             match event {
@@ -327,7 +327,7 @@ where
                     // Process other events
                     Self::process_single_event(
                         connection,
-                        stream,
+                        transport,
                         pingreq_send_timer,
                         pingreq_recv_timer,
                         pingresp_recv_timer,
@@ -364,14 +364,14 @@ where
 
     async fn process_single_event<S>(
         connection: &mut GenericConnection<Role, PacketIdType>,
-        stream: &mut S,
+        transport: &mut S,
         pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
         timer_tx: &mpsc::UnboundedSender<TimerKind>,
         event: GenericEvent<PacketIdType>,
     ) where
-        S: AsyncWrite + Unpin,
+        S: AsyncWrite + Unpin + crate::mqtt_ep::transport::TransportOps,
     {
         match event {
             GenericEvent::RequestSendPacket {
@@ -383,7 +383,7 @@ where
                 let total_len = packet.size();
 
                 // Send using vectored I/O
-                let send_result = match stream.write_vectored(&buffers).await {
+                let send_result = match transport.write_vectored(&buffers).await {
                     Ok(bytes_written) => {
                         // Verify all data was written
                         if bytes_written == total_len {
@@ -402,7 +402,7 @@ where
                 match send_result {
                     Ok(_) => {
                         // Successfully sent, flush the stream
-                        if let Err(_) = stream.flush().await {
+                        if let Err(_) = transport.flush().await {
                             // Flush failed, release packet ID if needed
                             if let Some(packet_id) = release_packet_id_if_send_error {
                                 let release_events = connection.release_packet_id(packet_id);
@@ -412,7 +412,7 @@ where
                                 let mut empty_queue = Vec::new();
                                 Box::pin(Self::process_events(
                                     connection,
-                                    stream,
+                                    transport,
                                     pingreq_send_timer,
                                     pingreq_recv_timer,
                                     pingresp_recv_timer,
@@ -434,7 +434,7 @@ where
                             let mut empty_queue = Vec::new();
                             Box::pin(Self::process_events(
                                 connection,
-                                stream,
+                                transport,
                                 pingreq_send_timer,
                                 pingreq_recv_timer,
                                 pingresp_recv_timer,
@@ -513,10 +513,9 @@ where
             }
 
             GenericEvent::RequestClose => {
-                // Shutdown the stream - for most stream types, this means
-                // dropping the stream or calling shutdown if available
-                let _ = stream.shutdown().await;
-                // Note: In a real implementation, we would signal the main loop to exit
+                // Shutdown the transport
+                let _ = crate::mqtt_ep::transport::TransportOps::shutdown(transport, Duration::from_secs(5)).await;
+                // Note: transport.recv() will return an error after shutdown, causing the loop to exit
             }
 
             GenericEvent::NotifyError(_error) => {
@@ -776,37 +775,49 @@ where
         // }
     }
 
-    /// Disconnect from the current transport and return to disconnected state
-    pub async fn disconnect(&self) -> Result<(), DisconnectError> {
+    /// Close the connection and return to disconnected state
+    pub async fn close(&self) -> Result<(), SendError> {
         let mut state = self.state.lock().await;
 
-        let (tx_send, _event_loop_handle) = match &*state {
+        let (tx_send, event_loop_handle) = match std::mem::replace(
+            &mut *state,
+            GenericEndpointState::Disconnected { 
+                connection: GenericConnection::new(self.version) // temporary
+            }
+        ) {
             GenericEndpointState::Disconnected { .. } => {
-                return Err(DisconnectError::AlreadyDisconnected);
+                return Err(SendError::NotConnected);
             }
             GenericEndpointState::Connected { tx_send, event_loop_handle } => {
-                (tx_send.clone(), event_loop_handle.abort_handle())
+                (tx_send, event_loop_handle)
             }
         };
 
-        // Send disconnect request to event loop
+        // Send close request to event loop
         let (response_tx, response_rx) = oneshot::channel();
         if tx_send.send(RequestResponse::Close { response_tx }).is_err() {
-            return Err(DisconnectError::ChannelClosed);
+            return Err(SendError::ChannelClosed);
         }
 
         // Wait for event loop to finish and return connection
         match response_rx.await {
             Ok(Ok(())) => {
-                // Event loop will handle shutdown and return connection
-                // For now, we'll create a new connection (TODO: get returned connection)
-                let connection = GenericConnection::new(self.version);
-
-                *state = GenericEndpointState::Disconnected { connection };
-                Ok(())
+                // Wait for event loop to finish and get the returned connection
+                match event_loop_handle.await {
+                    Ok(connection) => {
+                        *state = GenericEndpointState::Disconnected { connection };
+                        Ok(())
+                    }
+                    Err(_) => {
+                        // Event loop was aborted, create new connection
+                        let connection = GenericConnection::new(self.version);
+                        *state = GenericEndpointState::Disconnected { connection };
+                        Ok(())
+                    }
+                }
             }
-            Ok(Err(e)) => Err(DisconnectError::SendError(e)),
-            Err(_) => Err(DisconnectError::ChannelClosed),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(SendError::ChannelClosed),
         }
     }
 
