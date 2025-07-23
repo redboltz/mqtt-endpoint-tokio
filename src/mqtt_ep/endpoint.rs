@@ -806,12 +806,19 @@ where
                                 let mut cursor = std::io::Cursor::new(&read_buffer[..n]);
                                 let events = connection.recv(&mut cursor);
 
-                                // Check events for received packets matching pending filters
-                                Self::process_received_packets(&events, &mut pending_recv_requests);
-
-                                // Process other connection events
+                                // Process all connection events first, then handle packet filtering
                                 if let Some(ref mut t) = transport {
-                                    Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
+                                    Self::process_received_packets_and_events(
+                                        &mut connection,
+                                        t,
+                                        &mut pingreq_send_timer,
+                                        &mut pingreq_recv_timer,
+                                        &mut pingresp_recv_timer,
+                                        &timer_tx,
+                                        &mut pending_packet_id_requests,
+                                        &mut pending_recv_requests,
+                                        events,
+                                    ).await;
                                 }
                             }
                             Ok(_) | Err(_) => {
@@ -838,36 +845,52 @@ where
         }
     }
 
-    /// Process received packets and satisfy matching recv requests
-    fn process_received_packets(
-        events: &[GenericEvent<PacketIdType>],
+    /// Process all connection events first, then handle packet filtering for recv requests
+    async fn process_received_packets_and_events<S>(
+        connection: &mut GenericConnection<Role, PacketIdType>,
+        transport: &mut S,
+        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
+        pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
         pending_recv_requests: &mut Vec<(
             PacketFilter,
             oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
         )>,
-    ) {
-        let mut satisfied_indices = Vec::new();
+        events: Vec<GenericEvent<PacketIdType>>,
+    ) where
+        S: crate::mqtt_ep::transport::TransportOps,
+    {
+        // First, process all connection events
+        Self::process_events(
+            connection,
+            transport,
+            pingreq_send_timer,
+            pingreq_recv_timer,
+            pingresp_recv_timer,
+            timer_tx,
+            pending_packet_id_requests,
+            events.clone(),
+        )
+        .await;
 
-        for event in events {
+        // Then, handle packet filtering for recv requests
+        // Look for NotifyPacketReceived event (there should be 0 or 1)
+        for event in &events {
             if let GenericEvent::NotifyPacketReceived(packet) = event {
-                // Find first matching filter
-                for (i, (filter, _)) in pending_recv_requests.iter().enumerate() {
+                // Process pending recv requests in FIFO order (from front)
+                if let Some((filter, _)) = pending_recv_requests.first() {
                     if filter.matches(packet) {
-                        satisfied_indices.push(i);
+                        // Remove the first (oldest) request and send response
+                        let (_, response_tx) = pending_recv_requests.remove(0);
+                        let _ = response_tx.send(Ok(packet.clone()));
                         break; // Only satisfy one request per packet
                     }
+                    // If packet doesn't match the first filter, we don't consume any request
+                    // The packet will be "lost" and we continue to receive more packets
                 }
-            }
-        }
-
-        // Remove satisfied requests in reverse order and send responses
-        for &index in satisfied_indices.iter().rev() {
-            let (_, response_tx) = pending_recv_requests.swap_remove(index);
-            if let Some(GenericEvent::NotifyPacketReceived(packet)) = events
-                .iter()
-                .find(|e| matches!(e, GenericEvent::NotifyPacketReceived(_)))
-            {
-                let _ = response_tx.send(Ok(packet.clone()));
+                break; // Only process the first NotifyPacketReceived event
             }
         }
     }
