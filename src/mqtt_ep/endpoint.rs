@@ -23,7 +23,6 @@ use serde::Serialize;
  * SOFTWARE.
  */
 use std::marker::PhantomData;
-use std::sync::{Arc, Weak};
 use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
@@ -181,7 +180,6 @@ where
     config: EndpointConfig,
     tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
     event_loop_handle: tokio::task::JoinHandle<()>,
-    _lifetime_marker: Arc<()>,
     _marker: PhantomData<Role>,
 }
 
@@ -284,7 +282,7 @@ where
 
     /// Create a new endpoint with a pre-connected stream (for backward compatibility with tests)
     /// This method is primarily for tests that use tokio::io::duplex streams
-    pub fn new<S>(version: Version, stream: S) -> Self 
+    pub fn new<S>(version: Version, _stream: S) -> Self 
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
@@ -302,19 +300,15 @@ where
     pub fn new_with_config(version: Version, config: EndpointConfig) -> Self {
         let connection = GenericConnection::new(version);
         let (tx_send, rx_send) = mpsc::unbounded_channel();
-        let lifetime_marker = Arc::new(());
-        let lifetime_checker = Arc::downgrade(&lifetime_marker);
 
         // Start event loop immediately
-        let event_loop_handle =
-            tokio::spawn(Self::event_loop(connection, rx_send, lifetime_checker));
+        let event_loop_handle = tokio::spawn(Self::event_loop(connection, rx_send));
 
         Self {
             version,
             config,
             tx_send,
             event_loop_handle,
-            _lifetime_marker: lifetime_marker,
             _marker: PhantomData,
         }
     }
@@ -805,7 +799,6 @@ where
     async fn event_loop(
         mut connection: GenericConnection<Role, PacketIdType>,
         mut rx_send: mpsc::UnboundedReceiver<RequestResponse<Role, PacketIdType>>,
-        lifetime_checker: Weak<()>,
     ) {
         let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
         let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
@@ -821,13 +814,6 @@ where
 
         loop {
             tokio::select! {
-                // Check if endpoint was dropped
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
-                    if lifetime_checker.upgrade().is_none() {
-                        // Endpoint dropped, exit gracefully
-                        break;
-                    }
-                }
                 // Handle requests from external API
                 request = rx_send.recv() => {
                     match request {
