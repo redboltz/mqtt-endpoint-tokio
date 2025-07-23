@@ -29,18 +29,21 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
-use mqtt_protocol_core::mqtt::Version;
-use mqtt_protocol_core::mqtt::connection::event::TimerKind;
-use mqtt_protocol_core::mqtt::connection::role::RoleType;
-use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
-use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
-use mqtt_protocol_core::mqtt::packet::v5_0;
-use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket};
-use mqtt_protocol_core::mqtt::types::IsPacketId;
+use mqtt_protocol_core::mqtt;
+use mqtt_protocol_core::mqtt::prelude::*;
+
+// use mqtt_protocol_core::mqtt::Version;
+// use mqtt_protocol_core::mqtt::connection::event::TimerKind;
+// use mqtt_protocol_core::mqtt::connection::role::RoleType;
+// use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
+// use mqtt_protocol_core::mqtt::packet::GenericPacketTrait;
+// use mqtt_protocol_core::mqtt::packet::v5_0;
+// use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket};
+// use mqtt_protocol_core::mqtt::types::IsPacketId;
 
 use crate::mqtt_ep::connection_option::ConnectionOption;
 use crate::mqtt_ep::packet_filter::PacketFilter;
-use crate::mqtt_ep::request_response::{ConnectError, RequestResponse, SendError, SendableErased};
+use crate::mqtt_ep::request_response::{ConnectError, RequestResponse, SendError};
 
 /// Configuration for MQTT endpoint (settable only at initialization time)
 #[derive(Debug, Clone)]
@@ -60,22 +63,22 @@ impl Default for EndpointConfig {
 /// Builder for creating GenericEndpoint with custom configuration
 pub struct GenericEndpointBuilder<Role, PacketIdType>
 where
-    Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+    Role: mqtt::role::RoleType + Send + Sync + 'static,
+    PacketIdType: mqtt::types::IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    version: Version,
+    version: mqtt::Version,
     config: EndpointConfig,
     _marker: PhantomData<(Role, PacketIdType)>,
 }
 
 impl<Role, PacketIdType> GenericEndpointBuilder<Role, PacketIdType>
 where
-    Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
-    <PacketIdType as IsPacketId>::Buffer: Send,
+    Role: mqtt::role::RoleType + Send + Sync + 'static,
+    PacketIdType: mqtt::types::IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+    <PacketIdType as mqtt::types::IsPacketId>::Buffer: Send,
 {
     /// Create a new builder with the specified MQTT version
-    pub fn new(version: Version) -> Self {
+    pub fn new(version: mqtt::Version) -> Self {
         Self {
             version,
             config: EndpointConfig::default(),
@@ -97,35 +100,35 @@ where
 
 pub struct GenericEndpoint<Role, PacketIdType>
 where
-    Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+    Role: mqtt::role::RoleType + Send + Sync + 'static,
+    PacketIdType: mqtt::types::IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
-    version: Version,
+    version: mqtt::Version,
     config: EndpointConfig,
-    tx_send: mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>,
+    tx_send: mpsc::UnboundedSender<RequestResponse<PacketIdType>>,
     event_loop_handle: tokio::task::JoinHandle<()>,
     _marker: PhantomData<Role>,
 }
 
 impl<Role, PacketIdType> GenericEndpoint<Role, PacketIdType>
 where
-    Role: RoleType + Send + Sync + 'static,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
-    <PacketIdType as IsPacketId>::Buffer: Send,
+    Role: mqtt::role::RoleType + Send + Sync + 'static,
+    PacketIdType: mqtt::types::IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
+    <PacketIdType as mqtt::types::IsPacketId>::Buffer: Send,
 {
     /// Create a new builder for configuring the endpoint
-    pub fn builder(version: Version) -> GenericEndpointBuilder<Role, PacketIdType> {
+    pub fn builder(version: mqtt::Version) -> GenericEndpointBuilder<Role, PacketIdType> {
         GenericEndpointBuilder::new(version)
     }
 
     /// Create a new endpoint with default configuration (initially disconnected)
-    pub fn new_disconnected(version: Version) -> Self {
+    pub fn new_disconnected(version: mqtt::Version) -> Self {
         Self::new_with_config(version, EndpointConfig::default())
     }
 
     /// Create a new endpoint with a pre-connected stream (for backward compatibility with tests)
     /// This method is primarily for tests that use tokio::io::duplex streams
-    pub fn new<S>(version: Version, _stream: S) -> Self
+    pub fn new<S>(version: mqtt::Version, _stream: S) -> Self
     where
         S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Send + Unpin + 'static,
     {
@@ -140,8 +143,8 @@ where
     }
 
     /// Create a new endpoint with custom configuration (initially disconnected)
-    pub fn new_with_config(version: Version, config: EndpointConfig) -> Self {
-        let connection = GenericConnection::new(version);
+    pub fn new_with_config(version: mqtt::Version, config: EndpointConfig) -> Self {
+        let connection = mqtt::GenericConnection::new(version);
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
         // Start event loop immediately
@@ -157,7 +160,7 @@ where
     }
 
     async fn process_events<S>(
-        connection: &mut GenericConnection<Role, PacketIdType>,
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         transport: &mut S,
         pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
@@ -276,7 +279,7 @@ where
 
     /// Process the packet ID waiting queue when a packet ID is released
     fn process_packet_id_waiting_queue(
-        connection: &mut GenericConnection<Role, PacketIdType>,
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
     ) {
         // Process requests from the front (index 0) to maintain FIFO order
@@ -303,14 +306,14 @@ where
     /// All packets are converted to GenericPacket internally via the Into trait.
     pub async fn send<T>(&self, packet: T) -> Result<(), SendError>
     where
-        T: Into<GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
+        T: Into<mqtt::packet::GenericPacket<PacketIdType>> + Sendable<Role, PacketIdType> + Send + 'static,
     {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
         tx_send
             .send(RequestResponse::Send {
-                packet: Box::new(packet),
+                packet: Box::<mqtt::packet::GenericPacket<PacketIdType>>::new(packet.into()),
                 response_tx,
             })
             .map_err(|_| SendError::ChannelClosed)?;
@@ -319,7 +322,7 @@ where
     }
 
     /// Receive any MQTT packet
-    pub async fn recv(&self) -> Result<GenericPacket<PacketIdType>, SendError> {
+    pub async fn recv(&self) -> Result<mqtt::packet::GenericPacket<PacketIdType>, SendError> {
         self.recv_filtered(PacketFilter::Any).await
     }
 
@@ -327,7 +330,7 @@ where
     pub async fn recv_filtered(
         &self,
         filter: PacketFilter,
-    ) -> Result<GenericPacket<PacketIdType>, SendError> {
+    ) -> Result<mqtt::packet::GenericPacket<PacketIdType>, SendError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -406,7 +409,7 @@ where
     /// The packets will be restored to the appropriate internal tracking structures based on their type and QoS level.
     pub async fn restore_packets(
         &self,
-        packets: Vec<GenericStorePacket<PacketIdType>>,
+        packets: Vec<mqtt::packet::GenericStorePacket<PacketIdType>>,
     ) -> Result<(), SendError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
@@ -428,7 +431,7 @@ where
     /// before closing the connection, so they can be restored later with restore_packets().
     pub async fn get_stored_packets(
         &self,
-    ) -> Result<Vec<GenericStorePacket<PacketIdType>>, SendError> {
+    ) -> Result<Vec<mqtt::packet::GenericStorePacket<PacketIdType>>, SendError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -447,8 +450,8 @@ where
     /// This is typically used before storing QoS 1 and QoS 2 packets that use topic aliases.
     pub async fn regulate_for_store(
         &self,
-        packet: v5_0::GenericPublish<PacketIdType>,
-    ) -> Result<v5_0::GenericPublish<PacketIdType>, SendError> {
+        packet: mqtt::packet::v5_0::GenericPublish<PacketIdType>,
+    ) -> Result<mqtt::packet::v5_0::GenericPublish<PacketIdType>, SendError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -502,13 +505,13 @@ where
     }
 
     /// Get the tx_send channel - always available in new architecture
-    fn get_tx_send(&self) -> mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>> {
+    fn get_tx_send(&self) -> mpsc::UnboundedSender<RequestResponse<PacketIdType>> {
         self.tx_send.clone()
     }
 
     /// Apply connection options to the MQTT connection
     fn apply_connection_options(
-        connection: &mut GenericConnection<Role, PacketIdType>,
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         options: &ConnectionOption,
     ) {
         if let Some(interval) = options.pingreq_send_interval {
@@ -587,8 +590,8 @@ where
 
     /// Event loop that handles transport I/O and MQTT protocol logic
     async fn event_loop(
-        mut connection: GenericConnection<Role, PacketIdType>,
-        mut rx_send: mpsc::UnboundedReceiver<RequestResponse<Role, PacketIdType>>,
+        mut connection: mqtt::GenericConnection<Role, PacketIdType>,
+        mut rx_send: mpsc::UnboundedReceiver<RequestResponse<PacketIdType>>,
     ) {
         let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
         let mut pingreq_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
@@ -601,7 +604,7 @@ where
             Vec::new();
         let mut pending_recv_requests: Vec<(
             PacketFilter,
-            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+            oneshot::Sender<Result<mqtt::packet::GenericPacket<PacketIdType>, SendError>>,
         )> = Vec::new();
         let mut transport: Option<Box<dyn crate::mqtt_ep::transport::TransportOps + Send>> = None;
         let mut read_buffer = vec![0u8; 4096];
@@ -612,7 +615,7 @@ where
                 request = rx_send.recv() => {
                     match request {
                         Some(RequestResponse::Send { packet, response_tx }) => {
-                            let events = packet.dispatch_send_boxed(&mut connection);
+                            let events = connection.send_generic_packet(*packet);
                             let _ = response_tx.send(Ok(()));
                             if let Some(ref mut t) = transport {
                                 Self::process_events(&mut connection, t, &mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer, &timer_tx, &mut pending_packet_id_requests, events).await;
@@ -780,7 +783,7 @@ where
 
     /// Process all connection events first, then handle packet filtering for recv requests
     async fn process_received_packets_and_events<S>(
-        connection: &mut GenericConnection<Role, PacketIdType>,
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         transport: &mut S,
         pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
         pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
@@ -789,7 +792,7 @@ where
         pending_packet_id_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
         pending_recv_requests: &mut Vec<(
             PacketFilter,
-            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+            oneshot::Sender<Result<mqtt::packet::GenericPacket<PacketIdType>, SendError>>,
         )>,
         events: Vec<GenericEvent<PacketIdType>>,
     ) where
@@ -833,7 +836,7 @@ where
     fn notify_recv_connection_error(
         pending_recv_requests: &mut Vec<(
             PacketFilter,
-            oneshot::Sender<Result<GenericPacket<PacketIdType>, SendError>>,
+            oneshot::Sender<Result<mqtt::packet::GenericPacket<PacketIdType>, SendError>>,
         )>,
     ) {
         for (_, response_tx) in pending_recv_requests.drain(..) {

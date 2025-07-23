@@ -1,7 +1,5 @@
 use crate::mqtt_ep::connection_option::ConnectionOption;
 use crate::mqtt_ep::packet_filter::PacketFilter;
-use mqtt_protocol_core::mqtt::connection::role::RoleType;
-use mqtt_protocol_core::mqtt::connection::{GenericConnection, GenericEvent, Sendable};
 use mqtt_protocol_core::mqtt::packet::v5_0;
 use mqtt_protocol_core::mqtt::packet::{GenericPacket, GenericStorePacket};
 use mqtt_protocol_core::mqtt::types::IsPacketId;
@@ -32,13 +30,12 @@ use serde::Serialize;
 use std::hash::Hash;
 use tokio::sync::oneshot;
 
-pub(crate) enum RequestResponse<Role, PacketIdType>
+pub(crate) enum RequestResponse<PacketIdType>
 where
-    Role: RoleType,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
 {
     Send {
-        packet: Box<dyn SendableErased<Role, PacketIdType>>,
+        packet: Box<GenericPacket<PacketIdType>>,
         response_tx: oneshot::Sender<Result<(), SendError>>,
     },
     Recv {
@@ -78,32 +75,6 @@ where
         packet: v5_0::GenericPublish<PacketIdType>,
         response_tx: oneshot::Sender<Result<v5_0::GenericPublish<PacketIdType>, SendError>>,
     },
-}
-
-/// Type-erased trait for sending Sendable packets through channels
-pub(crate) trait SendableErased<Role, PacketIdType>: Send
-where
-    Role: RoleType,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
-{
-    fn dispatch_send_boxed(
-        self: Box<Self>,
-        connection: &mut GenericConnection<Role, PacketIdType>,
-    ) -> Vec<GenericEvent<PacketIdType>>;
-}
-
-impl<T, Role, PacketIdType> SendableErased<Role, PacketIdType> for T
-where
-    T: Sendable<Role, PacketIdType> + Send,
-    Role: RoleType,
-    PacketIdType: IsPacketId + Eq + Hash + Serialize + 'static,
-{
-    fn dispatch_send_boxed(
-        self: Box<Self>,
-        connection: &mut GenericConnection<Role, PacketIdType>,
-    ) -> Vec<GenericEvent<PacketIdType>> {
-        (*self).dispatch_send(connection)
-    }
 }
 
 #[derive(Debug, Clone)]
