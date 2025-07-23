@@ -59,7 +59,7 @@ impl Default for EndpointConfig {
 pub struct ConnectionOption {
     /// PINGREQ send interval in milliseconds (for v3.1.1 and v5.0)
     pub pingreq_send_interval: Option<u64>,
-    /// Keep alive interval in seconds (for v3.1.1 and v5.0) 
+    /// Keep alive interval in seconds (for v3.1.1 and v5.0)
     pub keep_alive_interval: Option<u16>,
     /// Packet ID exhaust retry interval in milliseconds
     pub packet_id_exhaust_retry_interval: Option<u64>,
@@ -174,7 +174,7 @@ where
 }
 
 /// State of the MQTT endpoint
-enum EndpointState<Role, PacketIdType>
+enum GenericEndpointState<Role, PacketIdType>
 where
     Role: RoleType,
     PacketIdType: IsPacketId + Eq + Hash + Serialize + Send + Sync + 'static,
@@ -197,7 +197,7 @@ where
 {
     version: Version,
     config: EndpointConfig,
-    state: tokio::sync::Mutex<EndpointState<Role, PacketIdType>>,
+    state: tokio::sync::Mutex<GenericEndpointState<Role, PacketIdType>>,
     _marker: PhantomData<Role>,
 }
 
@@ -291,14 +291,14 @@ where
     /// Create a new endpoint with custom configuration (initially disconnected)
     pub fn new_with_config(version: Version, config: EndpointConfig) -> Self {
         let connection = GenericConnection::new(version);
-        
+
         // Apply configuration settings to the connection
         // Note: These settings should be applied during connection creation
-        
+
         Self {
             version,
             config,
-            state: tokio::sync::Mutex::new(EndpointState::Disconnected { connection }),
+            state: tokio::sync::Mutex::new(GenericEndpointState::Disconnected { connection }),
             _marker: PhantomData,
         }
     }
@@ -757,10 +757,10 @@ where
         let mut state = self.state.lock().await;
 
         match &*state {
-            EndpointState::Connected { .. } => {
+            GenericEndpointState::Connected { .. } => {
                 return Err(ConnectError::AlreadyConnected);
             }
-            EndpointState::Disconnected { .. } => {}
+            GenericEndpointState::Disconnected { .. } => {}
         }
 
         // Perform transport handshake
@@ -769,12 +769,12 @@ where
         // Extract connection from disconnected state
         let mut connection = match std::mem::replace(
             &mut *state,
-            EndpointState::Connected {
+            GenericEndpointState::Connected {
                 tx_send: mpsc::unbounded_channel().0, // temporary
                 event_loop_handle: tokio::spawn(async { GenericConnection::new(Version::V3_1_1) }), // temporary
             },
         ) {
-            EndpointState::Disconnected { connection } => connection,
+            GenericEndpointState::Disconnected { connection } => connection,
             _ => unreachable!(),
         };
 
@@ -788,7 +788,7 @@ where
         let event_loop_handle = tokio::spawn(Self::event_loop(connection, transport, rx_send));
 
         // Update state to connected
-        *state = EndpointState::Connected {
+        *state = GenericEndpointState::Connected {
             tx_send,
             event_loop_handle,
         };
@@ -800,8 +800,8 @@ where
     async fn get_tx_send(&self) -> Result<mpsc::UnboundedSender<RequestResponse<Role, PacketIdType>>, SendError> {
         let state = self.state.lock().await;
         match &*state {
-            EndpointState::Connected { tx_send, .. } => Ok(tx_send.clone()),
-            EndpointState::Disconnected { .. } => Err(SendError::NotConnected),
+            GenericEndpointState::Connected { tx_send, .. } => Ok(tx_send.clone()),
+            GenericEndpointState::Disconnected { .. } => Err(SendError::NotConnected),
         }
     }
 
@@ -824,10 +824,10 @@ where
         let mut state = self.state.lock().await;
 
         let (tx_send, _event_loop_handle) = match &*state {
-            EndpointState::Disconnected { .. } => {
+            GenericEndpointState::Disconnected { .. } => {
                 return Err(DisconnectError::AlreadyDisconnected);
             }
-            EndpointState::Connected { tx_send, event_loop_handle } => {
+            GenericEndpointState::Connected { tx_send, event_loop_handle } => {
                 (tx_send.clone(), event_loop_handle.abort_handle())
             }
         };
@@ -844,8 +844,8 @@ where
                 // Event loop will handle shutdown and return connection
                 // For now, we'll create a new connection (TODO: get returned connection)
                 let connection = GenericConnection::new(self.version);
-                
-                *state = EndpointState::Disconnected { connection };
+
+                *state = GenericEndpointState::Disconnected { connection };
                 Ok(())
             }
             Ok(Err(e)) => Err(DisconnectError::SendError(e)),
@@ -911,7 +911,7 @@ where
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                             connection.release_packet_id(packet_id);
                             let _ = response_tx.send(Ok(()));
-                            
+
                             // Check if we can fulfill any pending packet ID requests
                             while let Some(pending_tx) = pending_packet_id_requests.pop() {
                                 if let Ok(packet_id) = connection.acquire_packet_id() {
