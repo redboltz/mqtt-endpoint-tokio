@@ -171,105 +171,39 @@ where
         for event in events {
             match event {
                 GenericEvent::NotifyPacketIdReleased(_packet_id) => {
-                    // Handle packet ID release and process waiting queue
                     Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
                 }
-                _ => {
-                    // Process other events
-                    Self::process_single_event(
-                        connection,
-                        transport,
-                        pingreq_send_timer,
-                        pingreq_recv_timer,
-                        pingresp_recv_timer,
-                        timer_tx,
-                        event,
-                    )
-                    .await;
-                }
-            }
-        }
-    }
+                GenericEvent::RequestSendPacket {
+                    packet,
+                    release_packet_id_if_send_error,
+                } => {
+                    let buffers = packet.to_buffers();
+                    let send_result = transport.send(&buffers).await;
 
-    /// Process the packet ID waiting queue when a packet ID is released
-    fn process_packet_id_waiting_queue(
-        connection: &mut GenericConnection<Role, PacketIdType>,
-        pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
-    ) {
-        // Process requests from the front (index 0) to maintain FIFO order
-        while !pending_requests.is_empty() {
-            // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
-            match connection.acquire_packet_id() {
-                Ok(packet_id) => {
-                    // Successfully acquired packet ID, remove and send to the first waiting requester
-                    let response_tx = pending_requests.remove(0);
-                    let _ = response_tx.send(Ok(packet_id));
-                }
-                Err(_) => {
-                    // Failed to acquire packet ID, stop processing to maintain order
-                    break;
-                }
-            }
-        }
-    }
-
-    async fn process_single_event<S>(
-        connection: &mut GenericConnection<Role, PacketIdType>,
-        transport: &mut S,
-        pingreq_send_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        pingreq_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        pingresp_recv_timer: &mut Option<tokio::task::JoinHandle<()>>,
-        timer_tx: &mpsc::UnboundedSender<TimerKind>,
-        event: GenericEvent<PacketIdType>,
-    ) where
-        S: crate::mqtt_ep::transport::TransportOps,
-    {
-        match event {
-            GenericEvent::RequestSendPacket {
-                packet,
-                release_packet_id_if_send_error,
-            } => {
-                // Get buffers from packet
-                let buffers = packet.to_buffers();
-
-                // Send using TransportOps
-                let send_result = transport.send(&buffers).await;
-
-                match send_result {
-                    Ok(_) => {
-                        // Successfully sent - TransportOps::send handles flushing internally
-                    }
-                    Err(_) => {
-                        // Send failed, release packet ID if needed
-                        if let Some(packet_id) = release_packet_id_if_send_error {
-                            let release_events = connection.release_packet_id(packet_id);
-                            // Process sub-events using boxed future to avoid recursion limit
-                            // Note: We don't have access to pending_packet_id_requests here in process_single_event
-                            // This is acceptable since NotifyPacketIdReleased events should be handled at the top level
-                            let mut empty_queue = Vec::new();
-                            Box::pin(Self::process_events(
-                                connection,
-                                transport,
-                                pingreq_send_timer,
-                                pingreq_recv_timer,
-                                pingresp_recv_timer,
-                                timer_tx,
-                                &mut empty_queue,
-                                release_events,
-                            ))
-                            .await;
+                    match send_result {
+                        Ok(_) => {
+                            // Successfully sent - TransportOps::send handles flushing internally
+                        }
+                        Err(_) => {
+                            if let Some(packet_id) = release_packet_id_if_send_error {
+                                let release_events = connection.release_packet_id(packet_id);
+                                let mut empty_queue = Vec::new();
+                                Box::pin(Self::process_events(
+                                    connection,
+                                    transport,
+                                    pingreq_send_timer,
+                                    pingreq_recv_timer,
+                                    pingresp_recv_timer,
+                                    timer_tx,
+                                    &mut empty_queue,
+                                    release_events,
+                                ))
+                                .await;
+                            }
                         }
                     }
                 }
-            }
-
-            GenericEvent::NotifyPacketIdReleased(_packet_id) => {
-                // Currently do nothing as specified
-            }
-
-            GenericEvent::RequestTimerReset { kind, duration_ms } => {
-                // Cancel existing timer if present and set new timer
-                match kind {
+                GenericEvent::RequestTimerReset { kind, duration_ms } => match kind {
                     TimerKind::PingreqSend => {
                         if let Some(handle) = pingreq_send_timer.take() {
                             handle.abort();
@@ -303,12 +237,8 @@ where
                         });
                         *pingresp_recv_timer = Some(handle);
                     }
-                }
-            }
-
-            GenericEvent::RequestTimerCancel(kind) => {
-                // Cancel timer if present
-                match kind {
+                },
+                GenericEvent::RequestTimerCancel(kind) => match kind {
                     TimerKind::PingreqSend => {
                         if let Some(handle) = pingreq_send_timer.take() {
                             handle.abort();
@@ -324,27 +254,44 @@ where
                             handle.abort();
                         }
                     }
+                },
+                GenericEvent::RequestClose => {
+                    let _ = crate::mqtt_ep::transport::TransportOps::shutdown(
+                        transport,
+                        Duration::from_secs(5),
+                    )
+                    .await;
+                }
+                GenericEvent::NotifyError(_error) => {
+                    // Handle error - could log or trigger connection closure
+                    // For now, continue processing
+                }
+                GenericEvent::NotifyPacketReceived(_packet) => {
+                    // This should not happen in process_events
+                    // NotifyPacketReceived is handled separately in RequestResponse::Recv
                 }
             }
+        }
+    }
 
-            GenericEvent::RequestClose => {
-                // Shutdown the transport
-                let _ = crate::mqtt_ep::transport::TransportOps::shutdown(
-                    transport,
-                    Duration::from_secs(5),
-                )
-                .await;
-                // Note: transport.recv() will return an error after shutdown, causing the loop to exit
-            }
-
-            GenericEvent::NotifyError(_error) => {
-                // Handle error - could log or trigger connection closure
-                // For now, continue processing
-            }
-
-            GenericEvent::NotifyPacketReceived(_packet) => {
-                // This should not happen in process_single_event
-                // NotifyPacketReceived is handled separately in RequestResponse::Recv
+    /// Process the packet ID waiting queue when a packet ID is released
+    fn process_packet_id_waiting_queue(
+        connection: &mut GenericConnection<Role, PacketIdType>,
+        pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, SendError>>>,
+    ) {
+        // Process requests from the front (index 0) to maintain FIFO order
+        while !pending_requests.is_empty() {
+            // Note: acquire_packet_id() returns Result<PacketIdType, MqttError>, no events
+            match connection.acquire_packet_id() {
+                Ok(packet_id) => {
+                    // Successfully acquired packet ID, remove and send to the first waiting requester
+                    let response_tx = pending_requests.remove(0);
+                    let _ = response_tx.send(Ok(packet_id));
+                }
+                Err(_) => {
+                    // Failed to acquire packet ID, stop processing to maintain order
+                    break;
+                }
             }
         }
     }
