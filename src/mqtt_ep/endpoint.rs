@@ -29,11 +29,11 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
-use crate::mqtt_ep::Version;
 use crate::mqtt_ep::packet::v5_0::GenericPublish;
 use crate::mqtt_ep::packet::{GenericPacket, GenericStorePacket, IsPacketId};
 use crate::mqtt_ep::role::RoleType;
 use crate::mqtt_ep::transport::{TransportError, TransportOps};
+use crate::mqtt_ep::Version;
 
 // Internal mqtt-protocol-core imports
 use mqtt_protocol_core::mqtt;

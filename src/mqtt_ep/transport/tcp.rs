@@ -27,7 +27,7 @@ use std::io::IoSlice;
 use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 /// TCP transport implementation for MQTT connections.
 ///
