@@ -1,0 +1,63 @@
+[package]
+name = "mqtt-endpoint-tokio"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Takatoshi Kondo <redboltz@gmail.com>"]
+description = "A high-performance async MQTT client/server library for Rust with tokio, supporting MQTT v5.0 and v3.1.1 with TCP, TLS, and WebSocket transports"
+repository = "https://github.com/redboltz/mqtt-endpoint-tokio"
+homepage = "https://github.com/redboltz/mqtt-endpoint-tokio"
+documentation = "https://docs.rs/mqtt-endpoint-tokio"
+readme = "README.md"
+keywords = ["mqtt", "tokio", "async", "networking", "iot"]
+categories = ["network-programming", "asynchronous", "api-bindings"]
+
+[dependencies]
+# Core dependencies
+derive_builder = "0.20"
+getset = "0.1.5"
+tokio = { version = "1.0", features = ["net", "time", "rt", "rt-multi-thread", "macros", "sync"] }
+mqtt-protocol-core = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+prefix_tree_map = "0.2"
+uuid = { version = "1.0", features = ["v4", "serde"] }
+
+# TLS support
+tokio-rustls = "0.24"
+rustls = "0.21"
+rustls-native-certs = "0.6"
+
+# WebSocket support
+tokio-tungstenite = "0.20"
+tungstenite = "0.20"
+futures-util = "0.3"
+futures = "0.3"
+
+# Logging (optional)
+tracing = { version = "0.1", optional = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"], optional = true }
+tracing-appender = { version = "0.2", optional = true }
+
+[dev-dependencies]
+anyhow = "1.0"
+num_cpus = "1.0"
+clap = { version = "4.0", features = ["derive"] }
+rustls-pemfile = "1.0"
+url = "2.4"
+
+[features]
+default = ["logging"]
+logging = ["tracing", "tracing-subscriber", "tracing-appender"]
+
+# Release optimization settings
+[profile.release]
+# Enable maximum optimization
+opt-level = 3
+# Enable link-time optimization for better performance
+lto = true
+# Use 1 codegen unit for better optimization (slower compile, faster runtime)
+codegen-units = 1
+# Enable panic = abort for smaller binary size and better performance
+panic = "abort"
+# Strip debug symbols to reduce binary size
+strip = true
