@@ -33,7 +33,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio_rustls::{TlsAcceptor, rustls};
+use tokio_rustls::{rustls, TlsAcceptor};
 
 /// Test TCP server that accepts connections and sends a simple response
 async fn run_tcp_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> SocketAddr {

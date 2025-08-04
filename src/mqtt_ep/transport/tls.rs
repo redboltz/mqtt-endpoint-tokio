@@ -26,7 +26,7 @@ use std::future::Future;
 use std::io::IoSlice;
 use std::pin::Pin;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 
 /// Trait representing a TLS stream that can be used for async I/O operations.
 ///

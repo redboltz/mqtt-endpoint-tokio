@@ -26,10 +26,10 @@ use std::future::Future;
 use std::io::IoSlice;
 use std::pin::Pin;
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use tokio_tungstenite::{
-    WebSocketStream,
     tungstenite::{Error as WsError, Message},
+    WebSocketStream,
 };
 
 /// WebSocket transport implementation for MQTT-over-WebSocket connections.

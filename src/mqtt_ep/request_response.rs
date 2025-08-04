@@ -1,10 +1,10 @@
 use std::collections::HashSet;
 
-use crate::mqtt_ep::Version;
 use crate::mqtt_ep::connection_error::ConnectionError;
 use crate::mqtt_ep::packet::v5_0::GenericPublish;
 use crate::mqtt_ep::packet::{GenericPacket, GenericStorePacket, IsPacketId};
 use crate::mqtt_ep::transport::TransportOps;
+use crate::mqtt_ep::Version;
 
 use crate::mqtt_ep::connection_option::GenericConnectionOption;
 use crate::mqtt_ep::endpoint::Mode;

@@ -32,9 +32,9 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::time::Duration;
-use tokio_rustls::{TlsConnector, client::TlsStream, rustls};
+use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
 use tokio_tungstenite::{
-    MaybeTlsStream, WebSocketStream, connect_async, tungstenite::http::Request,
+    connect_async, tungstenite::http::Request, MaybeTlsStream, WebSocketStream,
 };
 
 /// Establishes a TCP connection to the specified address.
