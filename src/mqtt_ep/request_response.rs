@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use mqtt_protocol_core::mqtt::common::HashSet;
 
 use crate::mqtt_ep::connection_error::ConnectionError;
 use crate::mqtt_ep::packet::v5_0::GenericPublish;

@@ -46,6 +46,8 @@ pub mod packet {
     }
 }
 
+pub use mqtt_protocol_core::mqtt::common::{HashMap, HashSet};
+
 // Role module
 pub mod role {
     pub use mqtt_protocol_core::mqtt::role::*;

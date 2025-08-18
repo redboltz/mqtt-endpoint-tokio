@@ -21,7 +21,6 @@
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-use std::collections::HashSet;
 use std::future;
 use std::marker::PhantomData;
 use std::time::Duration;
@@ -817,7 +816,7 @@ where
     ///
     /// # Returns
     ///
-    /// * `Ok(HashSet<PacketIdType>)` - Set of packet IDs for handled QoS 2 PUBLISH packets
+    /// * `Ok(mqtt::common::HashSet<PacketIdType>)` - Set of packet IDs for handled QoS 2 PUBLISH packets
     /// * `Err(ConnectionError)` - If retrieval failed
     ///
     /// # Errors
@@ -838,7 +837,7 @@ where
     /// ```
     pub async fn get_qos2_publish_handled_pids(
         &self,
-    ) -> Result<HashSet<PacketIdType>, ConnectionError> {
+    ) -> Result<mqtt::common::HashSet<PacketIdType>, ConnectionError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -1684,7 +1683,7 @@ where
 
         // Create cursor starting from unconsumed data
         let unconsumed_data = &read_buffer[*consumed_bytes..*buffer_size];
-        let mut cursor = std::io::Cursor::new(unconsumed_data);
+        let mut cursor = mqtt::common::Cursor::new(unconsumed_data);
         let events = connection.recv(&mut cursor);
         let position_after = cursor.position();
 

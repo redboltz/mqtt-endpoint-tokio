@@ -129,7 +129,7 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
         .connection_establish_timeout_ms(0u64)
         .shutdown_timeout_ms(5000u64)
         .recv_buffer_size(4096usize)
-        .restore_qos2_publish_handled(std::collections::HashSet::new())
+        .restore_qos2_publish_handled(mqtt_ep::HashSet::new())
         .build()
         .unwrap();
 

@@ -1,3 +1,4 @@
+use crate::mqtt_ep::packet::{GenericStorePacket, IsPacketId};
 use derive_builder::Builder;
 use getset::{CopyGetters, Getters};
 /**
@@ -23,9 +24,7 @@ use getset::{CopyGetters, Getters};
  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-use std::collections::HashSet;
-
-use crate::mqtt_ep::packet::{GenericStorePacket, IsPacketId};
+use mqtt_protocol_core::mqtt;
 
 /// Generic MQTT Connection Options - Configuration for MQTT endpoint connections
 ///
@@ -179,7 +178,7 @@ where
     /// Empty set
     #[builder(setter(into, strip_option))]
     #[getset(get = "pub")]
-    restore_qos2_publish_handled: HashSet<PacketIdType>,
+    restore_qos2_publish_handled: mqtt::common::HashSet<PacketIdType>,
 }
 
 /// Type alias for ConnectionOption with u16 packet IDs (most common case)
@@ -208,7 +207,7 @@ where
             .shutdown_timeout_ms(5000u64)
             .recv_buffer_size(4096usize)
             .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(HashSet::new())
+            .restore_qos2_publish_handled(mqtt::common::HashSet::new())
             .build()
             .expect("Default GenericConnectionOption should be valid")
     }
@@ -247,7 +246,7 @@ where
     ///
     /// A tuple containing:
     /// - `Vec<GenericStorePacket<PacketIdType>>`: Packets to restore
-    /// - `HashSet<PacketIdType>`: Set of handled QoS 2 PUBLISH packet IDs
+    /// - `mqtt::common::HashSet<PacketIdType>`: Set of handled QoS 2 PUBLISH packet IDs
     ///
     /// # Examples
     ///
@@ -257,7 +256,10 @@ where
     /// ```
     pub fn into_restore_data(
         self,
-    ) -> (Vec<GenericStorePacket<PacketIdType>>, HashSet<PacketIdType>) {
+    ) -> (
+        Vec<GenericStorePacket<PacketIdType>>,
+        mqtt::common::HashSet<PacketIdType>,
+    ) {
         (self.restore_packets, self.restore_qos2_publish_handled)
     }
 }
