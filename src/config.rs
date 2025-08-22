@@ -19,21 +19,11 @@
 // LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
+#![allow(dead_code)]
 
-// Re-export mqtt-protocol-core types
-// Core protocol types and traits
-pub use mqtt_protocol_core::mqtt_internal::Version;
-
-// Our own modules
-pub mod connection_error;
-pub mod connection_option;
-pub mod endpoint;
-pub mod packet_filter;
-pub mod request_response;
-pub mod transport;
-
-pub use connection_error::ConnectionError;
-pub use connection_option::ConnectionOption;
-pub use endpoint::{Endpoint, GenericEndpoint, Mode};
-pub use packet_filter::PacketFilter;
-pub use transport::{TransportError, TransportOps};
+#[macro_export]
+macro_rules! config_default {
+    ($packet_id_type:ty, $string_buffer_size:expr, $binary_buffer_size:expr, $payload_buffer_size:expr) => {
+        mqtt_protocol_core::make_type_size_aliases($packet_id_type, $string_buffer_size, $binary_buffer_size, $payload_buffer_size);
+    }
+}

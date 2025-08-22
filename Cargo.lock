@@ -853,9 +853,7 @@ dependencies = [
 
 [[package]]
 name = "mqtt-protocol-core"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b502fd17acb6117900f09de1ce92a436ba72b7289d97e023dfee2c2cf8f47a1"
+version = "0.3.1"
 dependencies = [
  "arrayvec",
  "delegate",
@@ -872,9 +870,6 @@ dependencies = [
  "strum",
  "strum_macros",
  "thiserror",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
 ]
 
 [[package]]

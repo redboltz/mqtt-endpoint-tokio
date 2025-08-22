@@ -1,26 +1,25 @@
-/**
- * MIT License
- *
- * Copyright (c) 2025 Takatoshi Kondo
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
+// MIT License
+//
+// Copyright (c) 2025 Takatoshi Kondo
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
 use std::future;
 use std::marker::PhantomData;
 use std::time::Duration;
@@ -28,15 +27,16 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::sleep;
 
-use crate::mqtt_ep::packet::v5_0::GenericPublish;
-use crate::mqtt_ep::packet::{GenericPacket, GenericStorePacket, IsPacketId};
-use crate::mqtt_ep::role::RoleType;
+use mqtt_protocol_core::mqtt_internal::packet::v5_0::GenericPublish;
+use mqtt_protocol_core::mqtt_internal::packet::{GenericPacket, GenericStorePacket, IsPacketId};
+use mqtt_protocol_core::mqtt_internal::role::RoleType;
+use mqtt_protocol_core::mqtt_internal::Version;
+use mqtt_protocol_core::mqtt_internal::GenericConnection;
+use mqtt_protocol_core::mqtt_internal::connection::Sendable;
+use mqtt_protocol_core::mqtt_internal::connection::TimerKind;
+use mqtt_protocol_core::mqtt_internal::connection::GenericEvent;
+use mqtt_protocol_core::mqtt_internal::common;
 use crate::mqtt_ep::transport::{TransportError, TransportOps};
-use crate::mqtt_ep::Version;
-
-// Internal mqtt-protocol-core imports
-use mqtt_protocol_core::mqtt;
-use mqtt_protocol_core::mqtt::prelude::*;
 
 use crate::mqtt_ep::connection_error::ConnectionError;
 use crate::mqtt_ep::connection_option::GenericConnectionOption;
@@ -213,7 +213,7 @@ where
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// ```
     pub fn new(version: Version) -> Self {
-        let connection = mqtt::GenericConnection::new(version);
+        let connection = GenericConnection::new(version);
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
         // Start event loop immediately
@@ -435,7 +435,7 @@ where
     pub async fn send<T>(&self, packet: T) -> Result<(), ConnectionError>
     where
         T: Into<GenericPacket<PacketIdType>>
-            + mqtt::connection::Sendable<Role, PacketIdType>
+            + Sendable<Role, PacketIdType>
             + Send
             + 'static,
     {
@@ -837,7 +837,7 @@ where
     /// ```
     pub async fn get_qos2_publish_handled_pids(
         &self,
-    ) -> Result<mqtt::common::HashSet<PacketIdType>, ConnectionError> {
+    ) -> Result<common::HashSet<PacketIdType>, ConnectionError> {
         let tx_send = self.get_tx_send();
         let (response_tx, response_rx) = oneshot::channel();
 
@@ -1041,7 +1041,7 @@ where
 
     /// Apply connection options to the MQTT connection
     fn apply_connection_options(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         options: GenericConnectionOption<PacketIdType>,
     ) -> (Duration, usize) {
         // Apply scalar settings (these are Copy, so we can access them after partial move)
@@ -1066,7 +1066,7 @@ where
 
     /// Event loop that handles transport I/O and MQTT protocol logic
     async fn request_event_loop(
-        mut connection: mqtt::GenericConnection<Role, PacketIdType>,
+        mut connection: GenericConnection<Role, PacketIdType>,
         mut rx_send: mpsc::UnboundedReceiver<RequestResponse<PacketIdType>>,
     ) {
         let mut pingreq_send_timer: Option<tokio::task::JoinHandle<()>> = None;
@@ -1074,7 +1074,7 @@ where
         let mut pingresp_recv_timer: Option<tokio::task::JoinHandle<()>> = None;
         let mut connection_establish_timer: Option<tokio::task::JoinHandle<()>> = None;
         let mut connection_mode: Option<Mode> = None;
-        let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<mqtt::connection::TimerKind>();
+        let (timer_tx, mut timer_rx) = mpsc::unbounded_channel::<TimerKind>();
         let (connection_timeout_tx, mut connection_timeout_rx) = mpsc::unbounded_channel::<()>();
 
         let mut pending_packet_id_requests: Vec<
@@ -1238,9 +1238,9 @@ where
                 timer_kind = timer_rx.recv() => {
                     if let Some(kind) = timer_kind {
                         match kind {
-                            mqtt::connection::TimerKind::PingreqSend => pingreq_send_timer = None,
-                            mqtt::connection::TimerKind::PingreqRecv => pingreq_recv_timer = None,
-                            mqtt::connection::TimerKind::PingrespRecv => pingresp_recv_timer = None,
+                            TimerKind::PingreqSend => pingreq_send_timer = None,
+                            TimerKind::PingreqRecv => pingreq_recv_timer = None,
+                            TimerKind::PingrespRecv => pingresp_recv_timer = None,
                         }
                         let events = connection.notify_timer_fired(kind);
                         if let Some(ref mut t) = transport {
@@ -1360,7 +1360,7 @@ where
 
     /// Handle close request with proper queueing
     async fn handle_close_request(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         transport: &mut Option<Box<dyn TransportOps + Send>>,
         pending_close_notifications: &mut Vec<oneshot::Sender<Result<(), ConnectionError>>>,
         timers: TimerTupleRef<'_>,
@@ -1417,13 +1417,13 @@ where
     }
 
     async fn process_connection_events<S>(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         transport: &mut S,
         timers: TimerTupleRef<'_>,
-        timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
         pending_packet_id_requests: &mut PacketIdRequestVec<PacketIdType>,
         shutdown_timeout: Duration,
-        events: Vec<mqtt::connection::GenericEvent<PacketIdType>>,
+        events: Vec<GenericEvent<PacketIdType>>,
     ) -> Result<(), ConnectionError>
     where
         S: TransportOps,
@@ -1432,10 +1432,10 @@ where
         let mut first_error: Option<ConnectionError> = None;
         for event in events {
             match event {
-                mqtt::connection::GenericEvent::NotifyPacketIdReleased(_packet_id) => {
+                GenericEvent::NotifyPacketIdReleased(_packet_id) => {
                     Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
                 }
-                mqtt::connection::GenericEvent::RequestSendPacket {
+                GenericEvent::RequestSendPacket {
                     packet,
                     release_packet_id_if_send_error,
                 } => {
@@ -1466,9 +1466,9 @@ where
                         }
                     }
                 }
-                mqtt::connection::GenericEvent::RequestTimerReset { kind, duration_ms } => {
+                GenericEvent::RequestTimerReset { kind, duration_ms } => {
                     match kind {
-                        mqtt::connection::TimerKind::PingreqSend => {
+                        TimerKind::PingreqSend => {
                             if let Some(handle) = pingreq_send_timer.take() {
                                 handle.abort();
                             }
@@ -1479,7 +1479,7 @@ where
                             });
                             *pingreq_send_timer = Some(handle);
                         }
-                        mqtt::connection::TimerKind::PingreqRecv => {
+                        TimerKind::PingreqRecv => {
                             if let Some(handle) = pingreq_recv_timer.take() {
                                 handle.abort();
                             }
@@ -1490,7 +1490,7 @@ where
                             });
                             *pingreq_recv_timer = Some(handle);
                         }
-                        mqtt::connection::TimerKind::PingrespRecv => {
+                        TimerKind::PingrespRecv => {
                             if let Some(handle) = pingresp_recv_timer.take() {
                                 handle.abort();
                             }
@@ -1503,27 +1503,27 @@ where
                         }
                     }
                 }
-                mqtt::connection::GenericEvent::RequestTimerCancel(kind) => match kind {
-                    mqtt::connection::TimerKind::PingreqSend => {
+                GenericEvent::RequestTimerCancel(kind) => match kind {
+                    TimerKind::PingreqSend => {
                         if let Some(handle) = pingreq_send_timer.take() {
                             handle.abort();
                         }
                     }
-                    mqtt::connection::TimerKind::PingreqRecv => {
+                    TimerKind::PingreqRecv => {
                         if let Some(handle) = pingreq_recv_timer.take() {
                             handle.abort();
                         }
                     }
-                    mqtt::connection::TimerKind::PingrespRecv => {
+                    TimerKind::PingrespRecv => {
                         if let Some(handle) = pingresp_recv_timer.take() {
                             handle.abort();
                         }
                     }
                 },
-                mqtt::connection::GenericEvent::RequestClose => {
+                GenericEvent::RequestClose => {
                     let _ = TransportOps::shutdown(transport, shutdown_timeout).await;
                 }
-                mqtt::connection::GenericEvent::NotifyError(error) => {
+                GenericEvent::NotifyError(error) => {
                     // Store the first MQTT protocol error for API response
                     // Only store the first error if none has been stored yet
                     if first_error.is_none() {
@@ -1532,7 +1532,7 @@ where
                     // Also log for debugging purposes
                     eprintln!("MQTT protocol error: {error:?}");
                 }
-                mqtt::connection::GenericEvent::NotifyPacketReceived(_packet) => {
+                GenericEvent::NotifyPacketReceived(_packet) => {
                     // This should not happen in process_events
                     // NotifyPacketReceived is handled separately in RequestResponse::Recv
                 }
@@ -1549,7 +1549,7 @@ where
 
     /// Process the packet ID waiting queue when a packet ID is released
     fn process_packet_id_waiting_queue(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         pending_requests: &mut Vec<oneshot::Sender<Result<PacketIdType, ConnectionError>>>,
     ) {
         // Process requests from the front (index 0) to maintain FIFO order
@@ -1578,13 +1578,13 @@ where
 
     /// Process all connection events first, then handle packet filtering for recv requests
     async fn process_received_packets_and_events<S>(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         transport: &mut S,
         timers: TimerTupleRef<'_>,
-        timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
         pending_requests: PendingRequestsTuple<'_, PacketIdType>,
         connection_ctx: (&mut Option<tokio::task::JoinHandle<()>>, &mut Option<Mode>),
-        events_and_timeout: (Vec<mqtt::connection::GenericEvent<PacketIdType>>, Duration),
+        events_and_timeout: (Vec<GenericEvent<PacketIdType>>, Duration),
     ) where
         S: TransportOps,
     {
@@ -1610,13 +1610,12 @@ where
         // Then, handle packet filtering for recv requests
         // Look for NotifyPacketReceived event (there should be 0 or 1)
         for event in &events {
-            if let mqtt::connection::GenericEvent::NotifyPacketReceived(packet) = event {
+            if let GenericEvent::NotifyPacketReceived(packet) = event {
                 // Check if we should cancel connection establish timeout
                 if let (Some(timer), Some(mode)) = (
                     connection_establish_timer.as_ref(),
                     connection_mode.as_ref(),
                 ) {
-                    use crate::mqtt_ep::packet::GenericPacket;
                     let should_cancel = matches!(
                         (mode, packet),
                         (Mode::Client, GenericPacket::V3_1_1Connack(_))
@@ -1658,12 +1657,12 @@ where
 
     /// Process read buffer data - handles one packet per call as per endpoint.recv() semantics
     async fn process_read_buffer<S>(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        connection: &mut GenericConnection<Role, PacketIdType>,
         buffer_ctx: (&mut [u8], &mut usize, &mut usize),
         pending_recv_requests: &mut RecvRequestVec<PacketIdType>,
         transport: &mut S,
         timers: TimerTupleRef<'_>,
-        timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
+        timer_tx: &mpsc::UnboundedSender<TimerKind>,
         context: ContextTuple<'_, PacketIdType>,
     ) where
         S: TransportOps,
@@ -1683,7 +1682,7 @@ where
 
         // Create cursor starting from unconsumed data
         let unconsumed_data = &read_buffer[*consumed_bytes..*buffer_size];
-        let mut cursor = mqtt::common::Cursor::new(unconsumed_data);
+        let mut cursor = common::Cursor::new(unconsumed_data);
         let events = connection.recv(&mut cursor);
         let position_after = cursor.position();
 
