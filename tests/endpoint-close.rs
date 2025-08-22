@@ -22,10 +22,13 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_close_api_compilation() {
+    common::init_tracing();
     // Test that the close API compiles correctly
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
     // Test that the close method exists and compiles
@@ -44,6 +47,7 @@ async fn test_close_api_compilation() {
 
 #[tokio::test]
 async fn test_close_with_different_roles() {
+    common::init_tracing();
     // Test close method with different roles
 
     // Test with Server role
@@ -70,6 +74,7 @@ async fn test_close_with_different_roles() {
 
 #[tokio::test]
 async fn test_operations_after_close() {
+    common::init_tracing();
     // Test that operations after close return appropriate errors
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 

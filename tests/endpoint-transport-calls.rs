@@ -20,6 +20,7 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
+mod common;
 mod stub_transport;
 
 use std::time::Duration;
@@ -33,6 +34,7 @@ type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_attach_accepts_connected_transport() {
+    common::init_tracing();
     let stub = StubTransport::new();
     // No connect response needed - transport is already "connected"
 
@@ -56,6 +58,7 @@ async fn test_attach_accepts_connected_transport() {
 
 #[tokio::test]
 async fn test_recv_calls_transport_recv() {
+    common::init_tracing();
     let mut stub = StubTransport::new();
 
     // Setup responses
@@ -89,6 +92,7 @@ async fn test_recv_calls_transport_recv() {
 
 #[tokio::test]
 async fn test_close_calls_shutdown() {
+    common::init_tracing();
     let mut stub = StubTransport::new();
     stub.add_response(TransportResponse::Shutdown);
 
@@ -117,6 +121,7 @@ async fn test_close_calls_shutdown() {
 
 #[tokio::test]
 async fn test_multiple_recv_attempts_for_unmatched_packets() {
+    common::init_tracing();
     let mut stub = StubTransport::new();
 
     // Setup responses

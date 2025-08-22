@@ -22,6 +22,8 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 use futures_util::SinkExt;
 use std::collections::HashMap;
 use std::fs::File;
@@ -333,6 +335,7 @@ async fn connect_tcp_tls_ws_for_test(
 
 #[tokio::test]
 async fn test_connect_tcp() {
+    common::init_tracing();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let addr = run_tcp_test_server("127.0.0.1:0", shutdown_rx).await;
 
@@ -365,6 +368,7 @@ async fn test_connect_tcp() {
 
 #[tokio::test]
 async fn test_connect_tcp_tls() {
+    common::init_tracing();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let addr = run_tls_test_server("127.0.0.1:0", shutdown_rx).await;
     let tls_config = load_client_tls_config();
@@ -414,6 +418,7 @@ async fn test_connect_tcp_tls() {
 
 #[tokio::test]
 async fn test_connect_tcp_ws() {
+    common::init_tracing();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let addr = run_ws_test_server("127.0.0.1:0", shutdown_rx).await;
 
@@ -467,6 +472,7 @@ async fn test_connect_tcp_ws() {
 
 #[tokio::test]
 async fn test_connect_tcp_tls_ws() {
+    common::init_tracing();
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let addr = run_tls_ws_test_server("127.0.0.1:0", shutdown_rx).await;
     let tls_config = load_client_tls_config();

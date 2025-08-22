@@ -25,10 +25,13 @@ use tokio::time::timeout;
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_packet_filter_matching() {
+    common::init_tracing();
     // Test Include filter
     let include_filter = mqtt_ep::PacketFilter::include(vec![
         mqtt_ep::packet::PacketType::Publish,

@@ -25,10 +25,13 @@ use tokio::time::timeout;
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_packet_id_when_available_api_compilation() {
+    common::init_tracing();
     // Test that the acquire_packet_id_when_available API compiles correctly
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 
@@ -56,6 +59,7 @@ async fn test_packet_id_when_available_api_compilation() {
 
 #[tokio::test]
 async fn test_acquire_unique_vs_when_available_api() {
+    common::init_tracing();
     // Test that both packet ID acquisition methods compile
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 

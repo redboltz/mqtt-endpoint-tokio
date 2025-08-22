@@ -38,10 +38,31 @@ use std::process;
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+fn init_tracing() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        let filter = if let Ok(rust_log) = std::env::var("RUST_LOG") {
+            tracing_subscriber::EnvFilter::new(rust_log)
+        } else {
+            let level = std::env::var("MQTT_LOG_LEVEL").unwrap_or_else(|_| "warn".to_string());
+            tracing_subscriber::EnvFilter::new(format!("mqtt_endpoint_tokio={level}"))
+        };
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .init();
+    });
+}
+
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::main]
 async fn main() {
+    init_tracing();
+
     // Parse command line arguments
     let args: Vec<String> = env::args().collect();
 

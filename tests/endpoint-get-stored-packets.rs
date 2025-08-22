@@ -22,12 +22,14 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
 mod stub_transport;
 
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_get_stored_packets_api_compilation() {
+    common::init_tracing();
     // Test that the get_stored_packets API compiles correctly
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 
@@ -52,6 +54,7 @@ async fn test_get_stored_packets_api_compilation() {
 
 #[tokio::test]
 async fn test_get_stored_packets_with_different_roles() {
+    common::init_tracing();
     // Test get_stored_packets method with different roles
 
     // Test with Server role
@@ -81,6 +84,7 @@ async fn test_get_stored_packets_with_different_roles() {
 
 #[tokio::test]
 async fn test_get_stored_packets_after_close() {
+    common::init_tracing();
     // Test that get_stored_packets after close returns appropriate errors
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 
@@ -105,6 +109,7 @@ async fn test_get_stored_packets_after_close() {
 
 #[tokio::test]
 async fn test_restore_and_get_stored_packets_roundtrip() {
+    common::init_tracing();
     // Test the roundtrip: restore packets via connection options -> get stored packets
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
 

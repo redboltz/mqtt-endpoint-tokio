@@ -22,10 +22,13 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
 
 #[tokio::test]
 async fn test_regulate_for_store_api_compilation() {
+    common::init_tracing();
     // Test that the regulate_for_store API compiles correctly
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0);
 
@@ -57,6 +60,7 @@ async fn test_regulate_for_store_api_compilation() {
 
 #[tokio::test]
 async fn test_regulate_for_store_with_different_roles() {
+    common::init_tracing();
     // Test regulate_for_store method with different roles
 
     // Test with Server role
@@ -114,6 +118,7 @@ async fn test_regulate_for_store_with_different_roles() {
 
 #[tokio::test]
 async fn test_regulate_for_store_after_close() {
+    common::init_tracing();
     // Test that regulate_for_store after close returns appropriate errors
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0);
 
@@ -147,6 +152,7 @@ async fn test_regulate_for_store_after_close() {
 
 #[tokio::test]
 async fn test_regulate_for_store_with_topic() {
+    common::init_tracing();
     // Test regulate_for_store with various packet configurations
     let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0);
 

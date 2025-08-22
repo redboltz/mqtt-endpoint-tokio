@@ -17,7 +17,7 @@ categories = ["network-programming", "asynchronous", "api-bindings"]
 derive_builder = "0.20"
 getset = "0.1.5"
 tokio = { version = "1.0", features = ["net", "time", "rt", "rt-multi-thread", "macros", "sync"] }
-mqtt-protocol-core = "0.4"
+mqtt-protocol-core = "0.5"
 
 serde = { version = "1.0", features = ["derive"] }
 prefix_tree_map = "0.2"
@@ -36,8 +36,6 @@ futures = "0.3"
 
 # Logging (optional)
 tracing = { version = "0.1", optional = true }
-tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"], optional = true }
-tracing-appender = { version = "0.2", optional = true }
 
 [dev-dependencies]
 anyhow = "1.0"
@@ -45,10 +43,18 @@ num_cpus = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 rustls-pemfile = "1.0"
 url = "2.4"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
+tracing-appender = { version = "0.2" }
 
 [features]
-default = ["logging"]
-logging = ["tracing", "tracing-subscriber", "tracing-appender"]
+default = []
+tracing = ["dep:tracing"]
+
+# Small String Optimization (SSO) features from mqtt-protocol-core
+sso-min-32bit = ["mqtt-protocol-core/sso-min-32bit"]
+sso-min-64bit = ["mqtt-protocol-core/sso-min-64bit"]
+sso-lv10 = ["mqtt-protocol-core/sso-lv10"]
+sso-lv20 = ["mqtt-protocol-core/sso-lv20"]
 
 # Release optimization settings
 [profile.release]
