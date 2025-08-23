@@ -1043,7 +1043,7 @@ where
     fn apply_connection_options(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         options: GenericConnectionOption<PacketIdType>,
-    ) -> (Duration, usize) {
+    ) -> (Duration, Option<usize>) {
         // Apply scalar settings (these are Copy, so we can access them after partial move)
         connection.set_pingreq_send_interval(*options.pingreq_send_interval_ms());
         connection.set_auto_pub_response(*options.auto_pub_response());
@@ -1052,7 +1052,7 @@ where
         connection.set_auto_replace_topic_alias_send(*options.auto_replace_topic_alias_send());
         connection.set_pingresp_recv_timeout(Some(*options.pingresp_recv_timeout_ms()));
 
-        // Get shutdown timeout and recv buffer size before moving options
+        // Get shutdown timeout and optional recv buffer size before moving options
         let shutdown_timeout = Duration::from_millis(*options.shutdown_timeout_ms());
         let recv_buffer_size = *options.recv_buffer_size();
 
@@ -1178,12 +1178,14 @@ where
                             let (new_shutdown_timeout, new_recv_buffer_size) = Self::apply_connection_options(&mut connection, options);
                             shutdown_timeout = new_shutdown_timeout;
 
-                            // Update recv buffer size if changed
-                            if new_recv_buffer_size != recv_buffer_size {
-                                recv_buffer_size = new_recv_buffer_size;
-                                read_buffer = vec![0u8; recv_buffer_size];
-                                buffer_size = 0;
-                                consumed_bytes = 0;
+                            // Update recv buffer size if specified
+                            if let Some(new_size) = new_recv_buffer_size {
+                                if new_size != recv_buffer_size {
+                                    recv_buffer_size = new_size;
+                                    read_buffer = vec![0u8; recv_buffer_size];
+                                    buffer_size = 0;
+                                    consumed_bytes = 0;
+                                }
                             }
 
                             // Set up connection establish timeout if specified

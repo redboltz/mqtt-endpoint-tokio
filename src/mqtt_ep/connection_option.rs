@@ -153,10 +153,10 @@ where
     /// but consume more memory.
     ///
     /// # Default
-    /// 4096 bytes
-    #[builder(setter(into, strip_option))]
+    /// None (maintains current buffer size, initially 4096 bytes)
+    #[builder(setter(into, strip_option), default)]
     #[getset(get = "pub")]
-    recv_buffer_size: usize,
+    recv_buffer_size: Option<usize>,
     /// Packets to restore after reconnection
     ///
     /// List of packets that should be restored and potentially retransmitted
@@ -205,7 +205,6 @@ where
             .pingresp_recv_timeout_ms(0u64)
             .connection_establish_timeout_ms(0u64)
             .shutdown_timeout_ms(5000u64)
-            .recv_buffer_size(4096usize)
             .restore_packets(Vec::new())
             .restore_qos2_publish_handled(mqtt::common::HashSet::new())
             .build()
