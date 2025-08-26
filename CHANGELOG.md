@@ -1,14 +1,8 @@
-# 0.4.0
+# 0.3.0 undetermined
 
 ## Breaking changes
 
 * mqtt_ep::common::HashSet::default() should be called instead of mqtt::common::HashSet::new(). #5
-
-
-# 0.3.0
-
-## Breaking changes
-
 * connection_option recv_buffer_size is now Option. If omitted, internal value 4096 is used. #4
 
 # 0.2.0
