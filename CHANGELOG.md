@@ -1,3 +1,10 @@
+# 0.4.0
+
+## Breaking changes
+
+* mqtt_ep::common::HashSet::default() should be called instead of mqtt::common::HashSet::new(). #5
+
+
 # 0.3.0
 
 ## Breaking changes
