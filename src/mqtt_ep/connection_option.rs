@@ -1,30 +1,29 @@
+// MIT License
+//
+// Copyright (c) 2025 Takatoshi Kondo
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+use crate::mqtt_ep::common::HashSet;
 use crate::mqtt_ep::packet::{GenericStorePacket, IsPacketId};
 use derive_builder::Builder;
 use getset::{CopyGetters, Getters};
-/**
- * MIT License
- *
- * Copyright (c) 2025 Takatoshi Kondo
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to deal
- * in the Software without restriction, including without limitation the rights
- * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
- * copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
- * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
- * SOFTWARE.
- */
-use mqtt_protocol_core::mqtt;
 
 /// Generic MQTT Connection Options - Configuration for MQTT endpoint connections
 ///
@@ -178,7 +177,7 @@ where
     /// Empty set
     #[builder(setter(into, strip_option))]
     #[getset(get = "pub")]
-    restore_qos2_publish_handled: mqtt::common::HashSet<PacketIdType>,
+    restore_qos2_publish_handled: HashSet<PacketIdType>,
 }
 
 /// Type alias for ConnectionOption with u16 packet IDs (most common case)
@@ -206,7 +205,7 @@ where
             .connection_establish_timeout_ms(0u64)
             .shutdown_timeout_ms(5000u64)
             .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(mqtt::common::HashSet::new())
+            .restore_qos2_publish_handled(HashSet::default())
             .build()
             .expect("Default GenericConnectionOption should be valid")
     }
@@ -244,8 +243,8 @@ where
     /// # Returns
     ///
     /// A tuple containing:
-    /// - `Vec<GenericStorePacket<PacketIdType>>`: Packets to restore
-    /// - `mqtt::common::HashSet<PacketIdType>`: Set of handled QoS 2 PUBLISH packet IDs
+    /// - `Vec<mqtt_ep::packet::GenericStorePacket<PacketIdType>>`: Packets to restore
+    /// - `mqtt_ep::common::HashSet<PacketIdType>`: Set of handled QoS 2 PUBLISH packet IDs
     ///
     /// # Examples
     ///
@@ -255,10 +254,7 @@ where
     /// ```
     pub fn into_restore_data(
         self,
-    ) -> (
-        Vec<GenericStorePacket<PacketIdType>>,
-        mqtt::common::HashSet<PacketIdType>,
-    ) {
+    ) -> (Vec<GenericStorePacket<PacketIdType>>, HashSet<PacketIdType>) {
         (self.restore_packets, self.restore_qos2_publish_handled)
     }
 }
