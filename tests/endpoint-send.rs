@@ -22,8 +22,11 @@
 
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 #[tokio::test]
 async fn test_send_concrete_packet() {
+    common::init_tracing();
     // Create a mock stream using duplex
 
     // Create mqtt_ep::GenericEndpoint for Client role with u16 packet ID
@@ -42,6 +45,7 @@ async fn test_send_concrete_packet() {
 
 #[tokio::test]
 async fn test_send_generic_packet() {
+    common::init_tracing();
     // Create a mock stream using duplex
 
     // Create mqtt_ep::GenericEndpoint for Client role with u16 packet ID
@@ -61,6 +65,7 @@ async fn test_send_generic_packet() {
 
 #[tokio::test]
 async fn test_send_with_different_roles() {
+    common::init_tracing();
     // Test with Server role
     {
         let endpoint: mqtt_ep::GenericEndpoint<mqtt_ep::role::Server, u16> =
@@ -83,6 +88,7 @@ async fn test_send_with_different_roles() {
 
 #[tokio::test]
 async fn test_packet_id_management() {
+    common::init_tracing();
     // Create a mock stream using duplex
 
     // Create mqtt_ep::GenericEndpoint for Client role with u16 packet ID
@@ -99,6 +105,7 @@ async fn test_packet_id_management() {
 
 #[tokio::test]
 async fn test_send_with_u32_packet_id() {
+    common::init_tracing();
     // Test with u32 packet ID type (for broker clustering)
 
     // Create mqtt_ep::GenericEndpoint for Client role with u32 packet ID

@@ -25,8 +25,11 @@
 /// and returned as API responses instead of just being logged.
 use mqtt_endpoint_tokio::mqtt_ep;
 
+mod common;
+
 #[tokio::test]
 async fn test_mqtt_error_propagation_in_api_responses() {
+    common::init_tracing();
     println!("Testing MQTT error propagation in API responses");
 
     // Create a mock stream using duplex
@@ -64,6 +67,7 @@ async fn test_mqtt_error_propagation_in_api_responses() {
 
 #[tokio::test]
 async fn test_first_error_wins_policy() {
+    common::init_tracing();
     println!("Testing that first MQTT error wins when multiple errors occur");
 
     // This test demonstrates that when multiple NotifyError events occur

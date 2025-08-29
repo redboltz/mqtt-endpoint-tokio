@@ -33,6 +33,7 @@ use crate::mqtt_ep::packet_filter::PacketFilter;
 
 use tokio::sync::oneshot;
 
+#[allow(clippy::large_enum_variant)]
 pub(crate) enum RequestResponse<PacketIdType>
 where
     PacketIdType: IsPacketId + Send + Sync,
