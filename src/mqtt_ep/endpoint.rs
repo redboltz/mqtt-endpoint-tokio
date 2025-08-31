@@ -1111,15 +1111,18 @@ where
                                     // Add packet to queue for later retry
                                     packet_queue.push((packet, response_tx));
                                 } else {
-                                    match Self::process_send(
+                                    let events = connection.send(*packet);
+                                    match Self::process_connection_events(
                                         &mut connection,
                                         t,
-                                        *packet,
                                         (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                         &timer_tx,
                                         &mut pending_packet_id_requests,
                                         shutdown_timeout,
-                                    ).await {
+                                        events,
+                                        &mut packet_queue
+                                    )
+                                    .await {
                                         Ok(()) => {
                                             let _ = response_tx.send(Ok(()));
                                         }
@@ -1541,7 +1544,7 @@ where
                                     &mut empty_queue,
                                     Duration::from_secs(5), // Default timeout for packet ID release
                                     release_events,
-                                    &mut Vec::new(), // Empty packet queue
+                                    packet_queue,
                                 ))
                                 .await;
                                 // Note: We ignore MQTT errors during packet ID release
@@ -1658,35 +1661,6 @@ where
                 }
             }
         }
-    }
-
-    /// Common send processing logic used by both direct sends and queued packet processing
-    async fn process_send<S>(
-        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
-        transport: &mut S,
-        packet: GenericPacket<PacketIdType>,
-        timers: TimerTupleRef<'_>,
-        timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
-        pending_packet_id_requests: &mut Vec<
-            oneshot::Sender<Result<PacketIdType, ConnectionError>>,
-        >,
-        shutdown_timeout: Duration,
-    ) -> Result<(), ConnectionError>
-    where
-        S: TransportOps,
-    {
-        let events = connection.send(packet);
-        Self::process_connection_events(
-            connection,
-            transport,
-            timers,
-            timer_tx,
-            pending_packet_id_requests,
-            shutdown_timeout,
-            events,
-            &mut Vec::new(), // Empty packet queue for this send
-        )
-        .await
     }
 
     /// Process all connection events first, then handle packet filtering for recv requests
