@@ -68,9 +68,10 @@ where
     ///
     /// # Default
     /// 0 (disabled)
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "0", setter(into, strip_option))]
     #[getset(get = "pub")]
     pingreq_send_interval_ms: u64,
+
     /// Enable automatic PUBLISH response handling
     ///
     /// When enabled, the endpoint automatically sends PUBACK, PUBREC, and PUBCOMP
@@ -78,9 +79,10 @@ where
     ///
     /// # Default
     /// true
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "true", setter(into, strip_option))]
     #[getset(get = "pub")]
     auto_pub_response: bool,
+
     /// Enable automatic PING response handling
     ///
     /// When enabled, the endpoint automatically responds to PINGREQ packets
@@ -88,9 +90,10 @@ where
     ///
     /// # Default
     /// true
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "true", setter(into, strip_option))]
     #[getset(get = "pub")]
     auto_ping_response: bool,
+
     /// Enable automatic topic alias mapping for outgoing messages
     ///
     /// When enabled, the endpoint automatically maps frequently used topics
@@ -99,9 +102,10 @@ where
     ///
     /// # Default
     /// false
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "false", setter(into, strip_option))]
     #[getset(get = "pub")]
     auto_map_topic_alias_send: bool,
+
     /// Enable automatic topic alias replacement for outgoing messages
     ///
     /// When enabled, the endpoint automatically replaces topic names with
@@ -110,9 +114,10 @@ where
     ///
     /// # Default
     /// false
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "false", setter(into, strip_option))]
     #[getset(get = "pub")]
     auto_replace_topic_alias_send: bool,
+
     /// PING response receive timeout in milliseconds
     ///
     /// Maximum time to wait for a PINGRESP after sending a PINGREQ.
@@ -121,9 +126,10 @@ where
     ///
     /// # Default
     /// 0 (disabled)
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "0", setter(into, strip_option))]
     #[getset(get = "pub")]
     pingresp_recv_timeout_ms: u64,
+
     /// Connection establishment timeout in milliseconds
     ///
     /// Maximum time to wait for the connection to be established,
@@ -132,9 +138,10 @@ where
     ///
     /// # Default
     /// 0 (disabled)
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "0", setter(into, strip_option))]
     #[getset(get = "pub")]
     connection_establish_timeout_ms: u64,
+
     /// Connection shutdown timeout in milliseconds
     ///
     /// Maximum time to wait for graceful connection shutdown.
@@ -142,9 +149,10 @@ where
     ///
     /// # Default
     /// 5000 (5 seconds)
-    #[builder(setter(into, strip_option))]
+    #[builder(default = "5000", setter(into, strip_option))]
     #[getset(get = "pub")]
     shutdown_timeout_ms: u64,
+
     /// Receive buffer size in bytes
     ///
     /// Size of the buffer used for receiving data from the network.
@@ -156,6 +164,7 @@ where
     #[builder(setter(into, strip_option), default)]
     #[getset(get = "pub")]
     recv_buffer_size: Option<usize>,
+
     /// Packets to restore after reconnection
     ///
     /// List of packets that should be restored and potentially retransmitted
@@ -164,9 +173,10 @@ where
     ///
     /// # Default
     /// Empty vector
-    #[builder(setter(into, strip_option))]
+    #[builder(default, setter(into, strip_option))]
     #[getset(get = "pub")]
     restore_packets: Vec<GenericStorePacket<PacketIdType>>,
+
     /// Set of QoS 2 PUBLISH packet IDs that have been handled
     ///
     /// Used to track which QoS 2 PUBLISH packets have already been processed
@@ -175,9 +185,22 @@ where
     ///
     /// # Default
     /// Empty set
-    #[builder(setter(into, strip_option))]
+    #[builder(default, setter(into, strip_option))]
     #[getset(get = "pub")]
     restore_qos2_publish_handled: HashSet<PacketIdType>,
+
+    /// Enable queueing when ReceiveMaximum limit is reached
+    ///
+    /// When the ReceiveMaximum property limit is reached for QoS 1 and QoS 2 PUBLISH packets,
+    /// this flag determines whether to queue or return an error. If false, returns an error
+    /// without queueing. If true, packets are queued and sent when the limit allows,
+    /// returning an asynchronous response.
+    ///
+    /// # Default
+    /// false
+    #[builder(default = "false", setter(into, strip_option))]
+    #[getset(get = "pub")]
+    queuing_receive_maximum: bool,
 }
 
 /// Type alias for ConnectionOption with u16 packet IDs (most common case)
@@ -206,6 +229,7 @@ where
             .shutdown_timeout_ms(5000u64)
             .restore_packets(Vec::new())
             .restore_qos2_publish_handled(HashSet::default())
+            .queuing_receive_maximum(false)
             .build()
             .expect("Default GenericConnectionOption should be valid")
     }

@@ -134,6 +134,7 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
         .shutdown_timeout_ms(5000u64)
         .recv_buffer_size(4096usize)
         .restore_qos2_publish_handled(mqtt_ep::common::HashSet::default())
+        .queuing_receive_maximum(false)
         .build()
         .unwrap();
 
