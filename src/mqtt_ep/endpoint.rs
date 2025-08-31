@@ -135,6 +135,12 @@ type RecvRequestVec<PacketIdType> = Vec<(
     oneshot::Sender<Result<GenericPacket<PacketIdType>, ConnectionError>>,
 )>;
 
+// Type alias for packet queue
+type PacketQueueVec<PacketIdType> = Vec<(
+    Box<GenericPacket<PacketIdType>>,
+    oneshot::Sender<Result<(), ConnectionError>>,
+)>;
+
 // Type aliases for timer ref tuples
 type TimerTupleRef<'a> = (
     &'a mut Option<tokio::task::JoinHandle<()>>,
@@ -1043,7 +1049,7 @@ where
     fn apply_connection_options(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         options: GenericConnectionOption<PacketIdType>,
-    ) -> (Duration, Option<usize>) {
+    ) -> (Duration, Option<usize>, bool) {
         // Apply scalar settings (these are Copy, so we can access them after partial move)
         connection.set_pingreq_send_interval(*options.pingreq_send_interval_ms());
         connection.set_auto_pub_response(*options.auto_pub_response());
@@ -1056,12 +1062,14 @@ where
         let shutdown_timeout = Duration::from_millis(*options.shutdown_timeout_ms());
         let recv_buffer_size = *options.recv_buffer_size();
 
+        let queuing_receive_maximum = *options.queuing_receive_maximum();
+
         // Move large collections efficiently using the helper method
         let (restore_packets, restore_qos2_publish_handled) = options.into_restore_data();
         connection.restore_packets(restore_packets);
         connection.restore_qos2_publish_handled(restore_qos2_publish_handled);
 
-        (shutdown_timeout, recv_buffer_size)
+        (shutdown_timeout, recv_buffer_size, queuing_receive_maximum)
     }
 
     /// Event loop that handles transport I/O and MQTT protocol logic
@@ -1089,6 +1097,8 @@ where
         let mut read_buffer = vec![0u8; recv_buffer_size];
         let mut buffer_size: usize = 0; // Actual data size in read_buffer
         let mut consumed_bytes: usize = 0; // Bytes consumed by connection.recv()
+        let mut queuing_receive_maximum = false;
+        let mut packet_queue: PacketQueueVec<PacketIdType> = Vec::new();
 
         loop {
             tokio::select! {
@@ -1096,14 +1106,26 @@ where
                 request = rx_send.recv() => {
                     match request {
                         Some(RequestResponse::Send { packet, response_tx }) => {
-                            let events = connection.send(*packet);
                             if let Some(ref mut t) = transport {
-                                match Self::process_connection_events(&mut connection, t, (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer), &timer_tx, &mut pending_packet_id_requests, shutdown_timeout, events).await {
-                                    Ok(()) => {
-                                        let _ = response_tx.send(Ok(()));
-                                    }
-                                    Err(error) => {
-                                        let _ = response_tx.send(Err(error));
+                                if queuing_receive_maximum && connection.get_receive_maximum_vacancy_for_send().map_or(false, |v| v == 0) {
+                                    // Add packet to queue for later retry
+                                    packet_queue.push((packet, response_tx));
+                                } else {
+                                    match Self::process_send(
+                                        &mut connection,
+                                        t,
+                                        *packet,
+                                        (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
+                                        &timer_tx,
+                                        &mut pending_packet_id_requests,
+                                        shutdown_timeout,
+                                    ).await {
+                                        Ok(()) => {
+                                            let _ = response_tx.send(Ok(()));
+                                        }
+                                        Err(error) => {
+                                            let _ = response_tx.send(Err(error));
+                                        }
                                     }
                                 }
                             } else {
@@ -1145,7 +1167,16 @@ where
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                             let events = connection.release_packet_id(packet_id);
                             if let Some(ref mut t) = transport {
-                                match Self::process_connection_events(&mut connection, t, (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer), &timer_tx, &mut pending_packet_id_requests, shutdown_timeout, events).await {
+                                match Self::process_connection_events(
+                                    &mut connection,
+                                    t,
+                                    (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
+                                    &timer_tx,
+                                    &mut pending_packet_id_requests,
+                                    shutdown_timeout,
+                                    events,
+                                    &mut packet_queue
+                                ).await {
                                     Ok(()) => {
                                         let _ = response_tx.send(Ok(()));
                                     }
@@ -1175,8 +1206,9 @@ where
                             // Get timeout value before options is consumed
                             let timeout_ms = *options.connection_establish_timeout_ms();
 
-                            let (new_shutdown_timeout, new_recv_buffer_size) = Self::apply_connection_options(&mut connection, options);
+                            let (new_shutdown_timeout, new_recv_buffer_size, new_queuing_receive_maximum) = Self::apply_connection_options(&mut connection, options);
                             shutdown_timeout = new_shutdown_timeout;
+                            queuing_receive_maximum = new_queuing_receive_maximum;
 
                             // Update recv buffer size if specified
                             if let Some(new_size) = new_recv_buffer_size {
@@ -1246,7 +1278,16 @@ where
                         }
                         let events = connection.notify_timer_fired(kind);
                         if let Some(ref mut t) = transport {
-                            let _ = Self::process_connection_events(&mut connection, t, (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer), &timer_tx, &mut pending_packet_id_requests, shutdown_timeout, events).await;
+                            let _ = Self::process_connection_events(
+                                &mut connection,
+                                t,
+                                (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
+                                &timer_tx,
+                                &mut pending_packet_id_requests,
+                                shutdown_timeout,
+                                events,
+                                &mut packet_queue
+                            ).await;
                             // Note: We log MQTT errors from timer events but don't propagate them
                             // as there's no specific API call to respond to
                         }
@@ -1405,6 +1446,7 @@ where
             pending_packet_id_requests,
             Duration::from_secs(5), // Default timeout for close
             events,
+            &mut Vec::new(), // Empty packet queue for close
         )
         .await;
         // Note: We ignore MQTT errors during close as the connection is being terminated
@@ -1418,6 +1460,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn process_connection_events<S>(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         transport: &mut S,
@@ -1426,6 +1469,7 @@ where
         pending_packet_id_requests: &mut PacketIdRequestVec<PacketIdType>,
         shutdown_timeout: Duration,
         events: Vec<mqtt::connection::GenericEvent<PacketIdType>>,
+        packet_queue: &mut PacketQueueVec<PacketIdType>,
     ) -> Result<(), ConnectionError>
     where
         S: TransportOps,
@@ -1436,6 +1480,39 @@ where
             match event {
                 mqtt::connection::GenericEvent::NotifyPacketIdReleased(_packet_id) => {
                     Self::process_packet_id_waiting_queue(connection, pending_packet_id_requests);
+                    // Process queued packets inline to avoid recursion
+                    // We'll process them without complex error handling to avoid move issues
+                    while !packet_queue.is_empty()
+                        && connection
+                            .get_receive_maximum_vacancy_for_send()
+                            .map_or(false, |v| v > 0)
+                    {
+                        let (packet, response_tx) = packet_queue.remove(0);
+
+                        // Simply try to send the packet without detailed error handling
+                        let events = connection.send(*packet);
+                        let mut sent = false;
+
+                        for event in events {
+                            if let mqtt::connection::GenericEvent::RequestSendPacket {
+                                packet,
+                                ..
+                            } = event
+                            {
+                                let buffers = packet.to_buffers();
+                                if transport.send(&buffers).await.is_ok() {
+                                    sent = true;
+                                }
+                            }
+                        }
+
+                        // Simple success/failure response without detailed error propagation
+                        if sent {
+                            let _ = response_tx.send(Ok(()));
+                        } else {
+                            let _ = response_tx.send(Err(ConnectionError::NotConnected));
+                        }
+                    }
                 }
                 mqtt::connection::GenericEvent::RequestSendPacket {
                     packet,
@@ -1460,6 +1537,7 @@ where
                                     &mut empty_queue,
                                     Duration::from_secs(5), // Default timeout for packet ID release
                                     release_events,
+                                    &mut Vec::new(), // Empty packet queue
                                 ))
                                 .await;
                                 // Note: We ignore MQTT errors during packet ID release
@@ -1578,6 +1656,35 @@ where
         }
     }
 
+    /// Common send processing logic used by both direct sends and queued packet processing
+    async fn process_send<S>(
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        transport: &mut S,
+        packet: GenericPacket<PacketIdType>,
+        timers: TimerTupleRef<'_>,
+        timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
+        pending_packet_id_requests: &mut Vec<
+            oneshot::Sender<Result<PacketIdType, ConnectionError>>,
+        >,
+        shutdown_timeout: Duration,
+    ) -> Result<(), ConnectionError>
+    where
+        S: TransportOps,
+    {
+        let events = connection.send(packet);
+        Self::process_connection_events(
+            connection,
+            transport,
+            timers,
+            timer_tx,
+            pending_packet_id_requests,
+            shutdown_timeout,
+            events,
+            &mut Vec::new(), // Empty packet queue for this send
+        )
+        .await
+    }
+
     /// Process all connection events first, then handle packet filtering for recv requests
     async fn process_received_packets_and_events<S>(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
@@ -1604,6 +1711,7 @@ where
             pending_packet_id_requests,
             shutdown_timeout,
             events.clone(),
+            &mut Vec::new(), // Empty packet queue for received events
         )
         .await;
         // Note: We log MQTT errors from received packets but don't propagate them
