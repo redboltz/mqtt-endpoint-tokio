@@ -1241,6 +1241,7 @@ where
                                 &mut pending_close_notifications,
                                 (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                 &mut pending_packet_id_requests,
+                                &mut packet_queue,
                                 response_tx
                             ).await;
                         }
@@ -1327,6 +1328,7 @@ where
                                     &mut connection,
                                     (&mut read_buffer, &mut buffer_size, &mut consumed_bytes),
                                     &mut pending_recv_requests,
+                                    &mut packet_queue,
                                     transport.as_mut().unwrap(),
                                     (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                     &timer_tx,
@@ -1341,6 +1343,7 @@ where
                                         &mut connection,
                                         (&mut read_buffer, &mut buffer_size, &mut consumed_bytes),
                                         &mut pending_recv_requests,
+                                        &mut packet_queue,
                                         transport.as_mut().unwrap(),
                                         (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                         &timer_tx,
@@ -1408,6 +1411,7 @@ where
         pending_close_notifications: &mut Vec<oneshot::Sender<Result<(), ConnectionError>>>,
         timers: TimerTupleRef<'_>,
         pending_packet_id_requests: &mut PacketIdRequestVec<PacketIdType>,
+        packet_queue: &mut PacketQueueVec<PacketIdType>,
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     ) {
         if pending_close_notifications.len() > 0 {
@@ -1446,7 +1450,7 @@ where
             pending_packet_id_requests,
             Duration::from_secs(5), // Default timeout for close
             events,
-            &mut Vec::new(), // Empty packet queue for close
+            packet_queue,
         )
         .await;
         // Note: We ignore MQTT errors during close as the connection is being terminated
@@ -1686,12 +1690,14 @@ where
     }
 
     /// Process all connection events first, then handle packet filtering for recv requests
+    #[allow(clippy::too_many_arguments)]
     async fn process_received_packets_and_events<S>(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         transport: &mut S,
         timers: TimerTupleRef<'_>,
         timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
         pending_requests: PendingRequestsTuple<'_, PacketIdType>,
+        packet_queue: &mut PacketQueueVec<PacketIdType>,
         connection_ctx: (&mut Option<tokio::task::JoinHandle<()>>, &mut Option<Mode>),
         events_and_timeout: (Vec<mqtt::connection::GenericEvent<PacketIdType>>, Duration),
     ) where
@@ -1711,7 +1717,7 @@ where
             pending_packet_id_requests,
             shutdown_timeout,
             events.clone(),
-            &mut Vec::new(), // Empty packet queue for received events
+            packet_queue,
         )
         .await;
         // Note: We log MQTT errors from received packets but don't propagate them
@@ -1767,10 +1773,12 @@ where
     }
 
     /// Process read buffer data - handles one packet per call as per endpoint.recv() semantics
+    #[allow(clippy::too_many_arguments)]
     async fn process_read_buffer<S>(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         buffer_ctx: (&mut [u8], &mut usize, &mut usize),
         pending_recv_requests: &mut RecvRequestVec<PacketIdType>,
+        packet_queue: &mut PacketQueueVec<PacketIdType>,
         transport: &mut S,
         timers: TimerTupleRef<'_>,
         timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
@@ -1807,6 +1815,7 @@ where
             (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer),
             timer_tx,
             (pending_packet_id_requests, pending_recv_requests),
+            packet_queue,
             (connection_establish_timer, connection_mode),
             (events, shutdown_timeout),
         )
