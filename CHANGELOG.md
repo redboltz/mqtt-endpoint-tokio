@@ -6,6 +6,8 @@
 
 ## Other updates
 
+* Refine tests. #12
+* Fix offline publish. #12
 * Optimize packet receive process. #10
 
 # 0.3.2

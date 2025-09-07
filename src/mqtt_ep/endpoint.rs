@@ -1010,14 +1010,14 @@ where
         let mut consumed_bytes: usize = 0; // Bytes consumed by connection.recv()
         let mut queuing_receive_maximum = false;
         let mut packet_queue: PacketQueueVec<PacketIdType> = Vec::new();
-
+        let mut offline_publish_enabled: bool = false;
         loop {
             tokio::select! {
                 // Handle requests from external API
                 request = rx_send.recv() => {
                     match request {
                         Some(RequestResponse::Send { packet, response_tx }) => {
-                            if let Some(ref mut t) = transport {
+                            if transport.is_some() || offline_publish_enabled {
                                 if queuing_receive_maximum && connection.get_receive_maximum_vacancy_for_send().map_or(false, |v| v == 0) {
                                     // Add packet to queue for later retry
                                     packet_queue.push((packet, response_tx));
@@ -1025,7 +1025,7 @@ where
                                     let events = connection.send(*packet);
                                     match Self::process_connection_events(
                                         &mut connection,
-                                        t,
+                                        &mut transport,
                                         (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                         &timer_tx,
                                         &mut pending_packet_id_requests,
@@ -1080,26 +1080,22 @@ where
                         }
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                             let events = connection.release_packet_id(packet_id);
-                            if let Some(ref mut t) = transport {
-                                match Self::process_connection_events(
-                                    &mut connection,
-                                    t,
-                                    (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
-                                    &timer_tx,
-                                    &mut pending_packet_id_requests,
-                                    shutdown_timeout,
-                                    events,
-                                    &mut packet_queue
-                                ).await {
-                                    Ok(_received_packet) => {
-                                        let _ = response_tx.send(Ok(()));
-                                    }
-                                    Err(error) => {
-                                        let _ = response_tx.send(Err(error));
-                                    }
+                            match Self::process_connection_events(
+                                &mut connection,
+                                &mut transport,
+                                (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
+                                &timer_tx,
+                                &mut pending_packet_id_requests,
+                                shutdown_timeout,
+                                events,
+                                &mut packet_queue
+                            ).await {
+                                Ok(_received_packet) => {
+                                    let _ = response_tx.send(Ok(()));
                                 }
-                            } else {
-                                let _ = response_tx.send(Ok(())); // Release packet ID doesn't require transport
+                                Err(error) => {
+                                    let _ = response_tx.send(Err(error));
+                                }
                             }
                         }
                         Some(RequestResponse::GetStoredPackets { response_tx }) => {
@@ -1161,6 +1157,7 @@ where
                         }
                         Some(RequestResponse::SetOfflinePublish { offline_publish, response_tx }) => {
                             connection.set_offline_publish(offline_publish);
+                            offline_publish_enabled = offline_publish;
                             let _ = response_tx.send(Ok(()));
                         }
                         Some(RequestResponse::GetQos2PublishHandled { response_tx }) => {
@@ -1192,20 +1189,18 @@ where
                             mqtt::connection::TimerKind::PingrespRecv => pingresp_recv_timer = None,
                         }
                         let events = connection.notify_timer_fired(kind);
-                        if let Some(ref mut t) = transport {
-                            let _ = Self::process_connection_events(
-                                &mut connection,
-                                t,
-                                (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
-                                &timer_tx,
-                                &mut pending_packet_id_requests,
-                                shutdown_timeout,
-                                events,
-                                &mut packet_queue
-                            ).await;
-                            // Note: We log MQTT errors from timer events but don't propagate them
-                            // as there's no specific API call to respond to
-                        }
+                        let _ = Self::process_connection_events(
+                            &mut connection,
+                            &mut transport,
+                            (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
+                            &timer_tx,
+                            &mut pending_packet_id_requests,
+                            shutdown_timeout,
+                            events,
+                            &mut packet_queue
+                        ).await;
+                        // Note: We log MQTT errors from timer events but don't propagate them
+                        // as there's no specific API call to respond to
                     }
                 }
 
@@ -1243,7 +1238,7 @@ where
                                     (&mut read_buffer, &mut buffer_size, &mut consumed_bytes),
                                     &mut pending_recv_requests,
                                     &mut packet_queue,
-                                    transport.as_mut().unwrap(),
+                                    &mut transport,
                                     (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                     &timer_tx,
                                     (&mut pending_packet_id_requests, &mut connection_establish_timer, &mut connection_mode, shutdown_timeout),
@@ -1258,7 +1253,7 @@ where
                                         (&mut read_buffer, &mut buffer_size, &mut consumed_bytes),
                                         &mut pending_recv_requests,
                                         &mut packet_queue,
-                                        transport.as_mut().unwrap(),
+                                        &mut transport,
                                         (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                         &timer_tx,
                                         (&mut pending_packet_id_requests, &mut connection_establish_timer, &mut connection_mode, shutdown_timeout),
@@ -1345,20 +1340,16 @@ where
         pending_close_notifications.push(response_tx);
 
         // Shutdown transport first
-        let transport_ref = transport
-            .as_mut()
-            .expect("Transport should be Some when close is requested - this is a bug");
-        let _ = transport_ref.shutdown(Duration::from_secs(5)).await; // Note: This uses default timeout since we don't have access to connection options here
+        if let Some(ref mut t) = transport {
+            let _ = t.shutdown(Duration::from_secs(5)).await; // Note: This uses default timeout since we don't have access to connection options here
+        }
 
         // Notify connection about close and process events (including timer cancellation)
         let events = connection.notify_closed();
-        let transport_ref = transport
-            .as_mut()
-            .expect("Transport should still be Some after shutdown - this is a bug");
         let (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer) = timers;
         let _ = Self::process_connection_events(
             connection,
-            transport_ref,
+            transport,
             (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer),
             &mpsc::unbounded_channel().0, // Dummy timer_tx since we're closing
             pending_packet_id_requests,
@@ -1379,19 +1370,16 @@ where
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn process_connection_events<S>(
+    async fn process_connection_events(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
-        transport: &mut S,
+        transport: &mut Option<Box<dyn TransportOps + Send>>,
         timers: TimerTupleRef<'_>,
         timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
         pending_packet_id_requests: &mut PacketIdRequestVec<PacketIdType>,
         shutdown_timeout: Duration,
         events: Vec<mqtt::connection::GenericEvent<PacketIdType>>,
         packet_queue: &mut PacketQueueVec<PacketIdType>,
-    ) -> Result<Option<GenericPacket<PacketIdType>>, ConnectionError>
-    where
-        S: TransportOps,
-    {
+    ) -> Result<Option<GenericPacket<PacketIdType>>, ConnectionError> {
         let (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer) = timers;
         let mut first_error: Option<ConnectionError> = None;
         let mut received_packet = None;
@@ -1419,8 +1407,10 @@ where
                             } = event
                             {
                                 let buffers = packet.to_buffers();
-                                if transport.send(&buffers).await.is_ok() {
-                                    sent = true;
+                                if let Some(ref mut t) = transport {
+                                    if t.send(&buffers).await.is_ok() {
+                                        sent = true;
+                                    }
                                 }
                             }
                         }
@@ -1438,7 +1428,11 @@ where
                     release_packet_id_if_send_error,
                 } => {
                     let buffers = packet.to_buffers();
-                    let send_result = transport.send(&buffers).await;
+                    let send_result = if let Some(ref mut t) = transport {
+                        t.send(&buffers).await
+                    } else {
+                        Err(crate::mqtt_ep::transport::TransportError::NotConnected)
+                    };
 
                     match send_result {
                         Ok(_) => {
@@ -1520,7 +1514,9 @@ where
                     }
                 },
                 mqtt::connection::GenericEvent::RequestClose => {
-                    let _ = TransportOps::shutdown(transport, shutdown_timeout).await;
+                    if let Some(ref mut t) = transport {
+                        let _ = TransportOps::shutdown(t, shutdown_timeout).await;
+                    }
                 }
                 mqtt::connection::GenericEvent::NotifyError(error) => {
                     // Store the first MQTT protocol error for API response
@@ -1577,18 +1573,16 @@ where
 
     /// Process all connection events first, then handle packet filtering for recv requests
     #[allow(clippy::too_many_arguments)]
-    async fn process_received_packets_and_events<S>(
+    async fn process_received_packets_and_events(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
-        transport: &mut S,
+        transport: &mut Option<Box<dyn TransportOps + Send>>,
         timers: TimerTupleRef<'_>,
         timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
         pending_requests: PendingRequestsTuple<'_, PacketIdType>,
         packet_queue: &mut PacketQueueVec<PacketIdType>,
         connection_ctx: (&mut Option<tokio::task::JoinHandle<()>>, &mut Option<Mode>),
         events_and_timeout: (Vec<mqtt::connection::GenericEvent<PacketIdType>>, Duration),
-    ) where
-        S: TransportOps,
-    {
+    ) {
         let (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer) = timers;
         let (pending_packet_id_requests, pending_recv_requests) = pending_requests;
         let (connection_establish_timer, connection_mode) = connection_ctx;
@@ -1657,18 +1651,16 @@ where
 
     /// Process read buffer data - handles one packet per call as per endpoint.recv() semantics
     #[allow(clippy::too_many_arguments)]
-    async fn process_read_buffer<S>(
+    async fn process_read_buffer(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         buffer_ctx: (&mut [u8], &mut usize, &mut usize),
         pending_recv_requests: &mut RecvRequestVec<PacketIdType>,
         packet_queue: &mut PacketQueueVec<PacketIdType>,
-        transport: &mut S,
+        transport: &mut Option<Box<dyn TransportOps + Send>>,
         timers: TimerTupleRef<'_>,
         timer_tx: &mpsc::UnboundedSender<mqtt::connection::TimerKind>,
         context: ContextTuple<'_, PacketIdType>,
-    ) where
-        S: TransportOps,
-    {
+    ) {
         let (read_buffer, buffer_size, consumed_bytes) = buffer_ctx;
         let (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer) = timers;
         let (

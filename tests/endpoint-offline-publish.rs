@@ -46,9 +46,9 @@ async fn test_offline_publish() {
         .unwrap();
 
     let endpoint: ClientEndpoint = Arc::new(mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0));
-    endpoint.set_offline_publish(true).await;
+    let _ = endpoint.set_offline_publish(true).await;
 
-    // First publish - should succeed immediately
+    // First publish - should be stored offline since no transport is attached
     let packet_id_1 = endpoint.acquire_packet_id().await.unwrap();
     assert_eq!(packet_id_1, 1, "First packet ID should be 1");
 
@@ -60,11 +60,15 @@ async fn test_offline_publish() {
         .qos(mqtt_ep::packet::Qos::AtLeastOnce)
         .build()
         .unwrap();
-    stub.add_response(TransportResponse::SendOk); // For first PUBLISH packet
-    let send_result = endpoint.send(publish1).await;
+
+    // Create expected packet with DUP flag set (for offline publish comparison)
+    let expected_publish1_with_dup = publish1.clone().set_dup(true);
+    let expected_publish1_bytes = expected_publish1_with_dup.to_continuous_buffer();
+
+    let send_result = endpoint.send(publish1.clone()).await;
     assert!(
         send_result.is_ok(),
-        "PUBLISH should be sent successfully: {send_result:?}"
+        "PUBLISH should be accepted for offline storage: {send_result:?}"
     );
 
     // Attach transport with options
@@ -90,7 +94,7 @@ async fn test_offline_publish() {
         "CONNECT should be sent successfully: {send_result:?}"
     );
 
-    // Receive CONNACK
+    // Receive CONNACK - this should trigger automatic sending of offline stored packets
     let connack = mqtt_ep::packet::v5_0::Connack::builder()
         .session_present(true)
         .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
@@ -99,6 +103,8 @@ async fn test_offline_publish() {
 
     let connack_bytes = connack.to_continuous_buffer();
     stub.add_response(TransportResponse::RecvOk(connack_bytes));
+    stub.add_response(TransportResponse::SendOk); // For offline PUBLISH packet that will be sent after CONNACK
+
     let connack_result = timeout(Duration::from_millis(1000), endpoint.recv()).await;
     assert!(
         connack_result.is_ok(),
@@ -110,4 +116,42 @@ async fn test_offline_publish() {
         "CONNACK should be received successfully: {received_packet:?}"
     );
 
+    // Give some time for offline publish to be automatically sent after CONNACK
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Check that the offline publish1 packet was sent after CONNACK
+    let calls = stub.get_calls();
+
+    // Should have send calls for: CONNECT and the offline PUBLISH1 (after CONNACK)
+    let send_calls: Vec<_> = calls
+        .iter()
+        .filter(|call| matches!(call, stub_transport::TransportCall::Send { .. }))
+        .collect();
+
+    assert!(
+        send_calls.len() >= 2,
+        "Should have at least CONNECT and offline PUBLISH calls, got: {send_calls:?}"
+    );
+
+    // Check if offline PUBLISH1 was sent after CONNACK
+    let mut found_offline_publish = false;
+    for (i, call) in send_calls.iter().enumerate() {
+        if let stub_transport::TransportCall::Send { data } = call {
+            // Skip the first call (CONNECT packet)
+            if i == 0 {
+                continue;
+            }
+
+            // Compare complete packet with DUP flag set
+            if data == &expected_publish1_bytes {
+                found_offline_publish = true;
+                break;
+            }
+        }
+    }
+
+    assert!(
+        found_offline_publish,
+        "Should have found the offline PUBLISH1 packet with correct content"
+    );
 }
