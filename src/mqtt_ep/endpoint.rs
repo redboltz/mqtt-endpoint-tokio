@@ -1056,7 +1056,7 @@ where
         connection.set_auto_ping_response(*options.auto_ping_response());
         connection.set_auto_map_topic_alias_send(*options.auto_map_topic_alias_send());
         connection.set_auto_replace_topic_alias_send(*options.auto_replace_topic_alias_send());
-        connection.set_pingresp_recv_timeout(Some(*options.pingresp_recv_timeout_ms()));
+        connection.set_pingresp_recv_timeout(*options.pingresp_recv_timeout_ms());
 
         // Get shutdown timeout and optional recv buffer size before moving options
         let shutdown_timeout = Duration::from_millis(*options.shutdown_timeout_ms());

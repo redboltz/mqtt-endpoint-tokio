@@ -68,9 +68,9 @@ where
     ///
     /// # Default
     /// 0 (disabled)
-    #[builder(default = "0", setter(into, strip_option))]
+    #[builder(default = "None", setter(into, strip_option))]
     #[getset(get = "pub")]
-    pingreq_send_interval_ms: u64,
+    pingreq_send_interval_ms: Option<u64>,
 
     /// Enable automatic PUBLISH response handling
     ///
