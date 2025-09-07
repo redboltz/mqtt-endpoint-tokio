@@ -1,3 +1,7 @@
+# 0.3.3
+
+* Optimize packet receive process. #10
+
 # 0.3.2
 
 * Update mqtt-protocol-core to 0.6. #9

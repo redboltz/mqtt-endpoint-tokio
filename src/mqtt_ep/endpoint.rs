@@ -1123,7 +1123,7 @@ where
                                         &mut packet_queue
                                     )
                                     .await {
-                                        Ok(()) => {
+                                        Ok(_received_packet) => {
                                             let _ = response_tx.send(Ok(()));
                                         }
                                         Err(error) => {
@@ -1180,7 +1180,7 @@ where
                                     events,
                                     &mut packet_queue
                                 ).await {
-                                    Ok(()) => {
+                                    Ok(_received_packet) => {
                                         let _ = response_tx.send(Ok(()));
                                     }
                                     Err(error) => {
@@ -1477,12 +1477,13 @@ where
         shutdown_timeout: Duration,
         events: Vec<mqtt::connection::GenericEvent<PacketIdType>>,
         packet_queue: &mut PacketQueueVec<PacketIdType>,
-    ) -> Result<(), ConnectionError>
+    ) -> Result<Option<GenericPacket<PacketIdType>>, ConnectionError>
     where
         S: TransportOps,
     {
         let (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer) = timers;
         let mut first_error: Option<ConnectionError> = None;
+        let mut received_packet = None;
         for event in events {
             match event {
                 mqtt::connection::GenericEvent::NotifyPacketIdReleased(_packet_id) => {
@@ -1619,18 +1620,18 @@ where
                     // Also log for debugging purposes
                     eprintln!("MQTT protocol error: {error:?}");
                 }
-                mqtt::connection::GenericEvent::NotifyPacketReceived(_packet) => {
-                    // This should not happen in process_events
-                    // NotifyPacketReceived is handled separately in RequestResponse::Recv
+                mqtt::connection::GenericEvent::NotifyPacketReceived(packet) => {
+                    // Set the received packet (should be at most one according to mqtt-protocol-core)
+                    received_packet = Some(packet);
                 }
             }
         }
 
-        // Return the first error if any occurred, otherwise Ok
+        // Return the first error if any occurred, otherwise Ok with received packet
         if let Some(error) = first_error {
             Err(error)
         } else {
-            Ok(())
+            Ok(received_packet)
         }
     }
 
@@ -1683,58 +1684,55 @@ where
         let (events, shutdown_timeout) = events_and_timeout;
 
         // First, process all connection events
-        let _ = Self::process_connection_events(
+        let received_packet = Self::process_connection_events(
             connection,
             transport,
             (pingreq_send_timer, pingreq_recv_timer, pingresp_recv_timer),
             timer_tx,
             pending_packet_id_requests,
             shutdown_timeout,
-            events.clone(),
+            events,
             packet_queue,
         )
-        .await;
+        .await
+        .unwrap_or(None);
         // Note: We log MQTT errors from received packets but don't propagate them
         // as they're not related to any specific API call but rather incoming data
 
         // Then, handle packet filtering for recv requests
-        // Look for NotifyPacketReceived event (there should be 0 or 1)
-        for event in &events {
-            if let mqtt::connection::GenericEvent::NotifyPacketReceived(packet) = event {
-                // Check if we should cancel connection establish timeout
-                if let (Some(timer), Some(mode)) = (
-                    connection_establish_timer.as_ref(),
-                    connection_mode.as_ref(),
-                ) {
-                    use crate::mqtt_ep::packet::GenericPacket;
-                    let should_cancel = matches!(
-                        (mode, packet),
-                        (Mode::Client, GenericPacket::V3_1_1Connack(_))
-                            | (Mode::Client, GenericPacket::V5_0Connack(_))
-                            | (Mode::Server, GenericPacket::V3_1_1Connect(_))
-                            | (Mode::Server, GenericPacket::V5_0Connect(_))
-                    );
+        // Process received packet (there should be 0 or 1)
+        if let Some(packet) = received_packet {
+            // Check if we should cancel connection establish timeout
+            if let (Some(timer), Some(mode)) = (
+                connection_establish_timer.as_ref(),
+                connection_mode.as_ref(),
+            ) {
+                use crate::mqtt_ep::packet::GenericPacket;
+                let should_cancel = matches!(
+                    (mode, &packet),
+                    (Mode::Client, GenericPacket::V3_1_1Connack(_))
+                        | (Mode::Client, GenericPacket::V5_0Connack(_))
+                        | (Mode::Server, GenericPacket::V3_1_1Connect(_))
+                        | (Mode::Server, GenericPacket::V5_0Connect(_))
+                );
 
-                    if should_cancel {
-                        timer.abort();
-                        *connection_establish_timer = None;
-                        *connection_mode = None;
-                    }
+                if should_cancel {
+                    timer.abort();
+                    *connection_establish_timer = None;
+                    *connection_mode = None;
                 }
+            }
 
-                // Process pending recv requests in FIFO order (from front)
-                if let Some((filter, _)) = pending_recv_requests.first() {
-                    if filter.matches(packet) {
-                        // Remove the first (oldest) request and send response
-                        let (_, response_tx) = pending_recv_requests.remove(0);
-                        let _ = response_tx.send(Ok(packet.clone()));
-                        break; // Only satisfy one request per packet
-                    }
-                    // If packet doesn't match the first filter, we don't consume any request
-                    // The packet will be "lost" and the select loop will automatically
-                    // call t.recv() again since pending_recv_requests is not empty
+            // Process pending recv requests in FIFO order (from front)
+            if let Some((filter, _)) = pending_recv_requests.first() {
+                if filter.matches(&packet) {
+                    // Remove the first (oldest) request and send response
+                    let (_, response_tx) = pending_recv_requests.remove(0);
+                    let _ = response_tx.send(Ok(packet)); // Only satisfy one request per packet
                 }
-                break; // Only process the first NotifyPacketReceived event
+                // If packet doesn't match the first filter, we don't consume any request
+                // The packet will be "lost" and the select loop will automatically
+                // call t.recv() again since pending_recv_requests is not empty
             }
         }
     }
