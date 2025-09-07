@@ -53,68 +53,6 @@ pub enum Mode {
 }
 
 /// Builder for creating GenericEndpoint with custom configuration
-pub struct GenericEndpointBuilder<Role, PacketIdType>
-where
-    Role: RoleType + Send + Sync,
-    PacketIdType: IsPacketId + Send + Sync,
-{
-    version: Version,
-    _marker: PhantomData<(Role, PacketIdType)>,
-}
-
-impl<Role, PacketIdType> GenericEndpointBuilder<Role, PacketIdType>
-where
-    Role: RoleType + Send + Sync,
-    PacketIdType: IsPacketId + Send + Sync,
-    <PacketIdType as IsPacketId>::Buffer: Send,
-{
-    /// Create a new builder with the specified MQTT version
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - The MQTT protocol version to use (V3_1_1 or V5_0)
-    ///
-    /// # Returns
-    ///
-    /// A new `GenericEndpointBuilder` instance configured with the specified version
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
-    ///
-    /// let builder = mqtt_ep::endpoint::GenericEndpointBuilder::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
-    /// ```
-    pub fn new(version: Version) -> Self {
-        Self {
-            version,
-            _marker: PhantomData,
-        }
-    }
-
-    /// Build the endpoint (initially in disconnected state)
-    ///
-    /// Creates a new endpoint instance with the configured settings. The endpoint starts
-    /// in a disconnected state and must be connected to a transport before use.
-    ///
-    /// # Returns
-    ///
-    /// A new `GenericEndpoint` instance ready for connection
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
-    ///
-    /// let endpoint = mqtt_ep::endpoint::GenericEndpointBuilder::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0)
-    ///     .build();
-    /// ```
-    pub fn build(self) -> GenericEndpoint<Role, PacketIdType> {
-        GenericEndpoint::<Role, PacketIdType>::new(self.version)
-    }
-}
 
 pub struct GenericEndpoint<Role, PacketIdType>
 where
@@ -169,33 +107,6 @@ where
     PacketIdType: IsPacketId + Send + Sync,
     <PacketIdType as IsPacketId>::Buffer: Send,
 {
-    /// Create a new builder for configuring the endpoint
-    ///
-    /// This method provides a builder pattern for constructing endpoints with custom
-    /// configuration options. Use this when you need to set specific configuration
-    /// parameters before creating the endpoint.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - The MQTT protocol version to use (V3_1_1 or V5_0)
-    ///
-    /// # Returns
-    ///
-    /// A new `GenericEndpointBuilder` instance for configuring the endpoint
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
-    ///
-    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::builder(mqtt_ep::Version::V5_0)
-    ///     .build();
-    /// ```
-    pub fn builder(version: Version) -> GenericEndpointBuilder<Role, PacketIdType> {
-        GenericEndpointBuilder::new(version)
-    }
-
     /// Create a new endpoint with default configuration (initially disconnected)
     ///
     /// This is a convenience method that creates an endpoint with default settings.
