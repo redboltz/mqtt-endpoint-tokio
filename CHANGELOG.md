@@ -1,4 +1,10 @@
-# 0.3.3
+# 0.4.0
+
+## Breaking changes
+
+* Remove GenericEndpointBuilder. #11
+
+## Other updates
 
 * Optimize packet receive process. #10
 
