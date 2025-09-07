@@ -1,3 +1,7 @@
+# 0.3.2
+
+* Update mqtt-protocol-core to 0.6. #9
+
 # 0.3.1
 
 * Add queuing publish. #8
