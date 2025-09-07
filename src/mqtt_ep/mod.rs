@@ -31,8 +31,7 @@ pub mod packet {
 
     // Generic packet types
     pub use mqtt_protocol_core::mqtt::packet::{
-        GenericPacket, GenericStorePacket, Packet, PacketType, Property, Qos, SubEntry, SubOpts,
-        SubscriptionIdentifier,
+        GenericPacket, GenericStorePacket, Packet, PacketType, Qos, SubEntry, SubOpts,
     };
 
     // Version-specific packets
@@ -43,6 +42,18 @@ pub mod packet {
     pub mod v3_1_1 {
         pub use mqtt_protocol_core::mqtt::packet::v3_1_1::*;
     }
+
+    // Properties
+    pub use mqtt_protocol_core::mqtt::packet::{
+        AssignedClientIdentifier, AuthenticationData, AuthenticationMethod, ContentType,
+        CorrelationData, MaximumPacketSize, MaximumQos, MessageExpiryInterval,
+        PayloadFormatIndicator, Properties, PropertiesParse, PropertiesSize, Property, PropertyId,
+        ReasonString, ReceiveMaximum, RequestProblemInformation, RequestResponseInformation,
+        ResponseInformation, ResponseTopic, RetainAvailable, ServerKeepAlive, ServerReference,
+        SessionExpiryInterval, SharedSubscriptionAvailable, SubscriptionIdentifier,
+        SubscriptionIdentifierAvailable, TopicAlias, TopicAliasMaximum, UserProperty,
+        WildcardSubscriptionAvailable, WillDelayInterval,
+    };
 }
 
 pub mod common {
