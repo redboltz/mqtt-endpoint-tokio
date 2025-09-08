@@ -1,0 +1,152 @@
+// MIT License
+//
+// Copyright (c) 2025 Takatoshi Kondo
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+mod common;
+mod stub_transport;
+
+use std::time::Duration;
+use tokio::time::timeout;
+
+use mqtt_endpoint_tokio::mqtt_ep;
+
+use stub_transport::{StubTransport, TransportResponse};
+
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
+
+#[tokio::test]
+async fn test_receive_partial() {
+    common::init_tracing();
+
+    let mut stub = StubTransport::new();
+    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    // Attach transport
+    let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
+    assert!(
+        attach_result.is_ok(),
+        "Attach should succeed: {attach_result:?}"
+    );
+
+    // Send CONNECT packet
+    let connect_packet = mqtt_ep::packet::v3_1_1::Connect::builder()
+        .client_id("test_client")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+
+    stub.add_response(TransportResponse::SendOk);
+    let send_result = endpoint.send(connect_packet).await;
+    assert!(send_result.is_ok(), "CONNECT should be sent successfully");
+
+    // Prepare CONNACK response
+    let connack_packet = mqtt_ep::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(mqtt_ep::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = connack_packet.to_continuous_buffer();
+
+    stub.add_response(TransportResponse::RecvOk(connack_bytes));
+
+    // Receive CONNACK
+    let connack_result = timeout(Duration::from_millis(1000), endpoint.recv()).await;
+    assert!(connack_result.is_ok(), "Should receive CONNACK");
+    let received_connack = connack_result.unwrap();
+    assert!(
+        received_connack.is_ok(),
+        "CONNACK should be received successfully"
+    );
+
+    // Create two QoS 0 PUBLISH packets
+    let publish1 = mqtt_ep::packet::v3_1_1::Publish::builder()
+        .topic_name("test/topic1")
+        .unwrap()
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"Hello World 1")
+        .build()
+        .unwrap();
+
+    let publish2 = mqtt_ep::packet::v3_1_1::Publish::builder()
+        .topic_name("test/topic2")
+        .unwrap()
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"Hello World 2")
+        .build()
+        .unwrap();
+
+    // Convert to continuous buffers
+    let publish1_bytes = publish1.to_continuous_buffer();
+    let publish2_bytes = publish2.to_continuous_buffer();
+
+    // Split into 3 parts:
+    // Part 1: First half of publish1
+    let split1_point = publish1_bytes.len() / 2;
+    let part1 = publish1_bytes[..split1_point].to_vec();
+
+    // Part 2: Remaining half of publish1 + first half of publish2
+    let split2_point = publish2_bytes.len() / 2;
+    let mut part2 = publish1_bytes[split1_point..].to_vec();
+    part2.extend_from_slice(&publish2_bytes[..split2_point]);
+
+    // Part 3: Remaining half of publish2
+    let part3 = publish2_bytes[split2_point..].to_vec();
+
+    // Send first part (first half of publish1)
+    stub.add_response(TransportResponse::RecvOk(part1));
+
+    // Send second part (remaining publish1 + first half of publish2)
+    stub.add_response(TransportResponse::RecvOk(part2));
+
+    // Start first recv() - this should complete when first PUBLISH is fully received
+    let recv1_future = endpoint.recv();
+    let recv1_result = timeout(Duration::from_millis(1000), recv1_future).await;
+    assert!(recv1_result.is_ok(), "First recv should complete");
+    let received_publish1 = recv1_result.unwrap();
+    assert!(
+        received_publish1.is_ok(),
+        "First PUBLISH should be received successfully"
+    );
+
+    // Verify first publish - compare with original packet
+    let received_publish1_packet = received_publish1.unwrap();
+    let expected_publish1: mqtt_ep::packet::GenericPacket<u16> = publish1.into();
+    assert_eq!(received_publish1_packet, expected_publish1);
+
+    // Send third part (remaining half of publish2)
+    stub.add_response(TransportResponse::RecvOk(part3));
+
+    // Start second recv() - this should complete when second PUBLISH is fully received
+    let recv2_future = endpoint.recv();
+    let recv2_result = timeout(Duration::from_millis(1000), recv2_future).await;
+    assert!(recv2_result.is_ok(), "Second recv should complete");
+    let received_publish2 = recv2_result.unwrap();
+    assert!(
+        received_publish2.is_ok(),
+        "Second PUBLISH should be received successfully"
+    );
+
+    // Verify second publish - compare with original packet
+    let received_publish2_packet = received_publish2.unwrap();
+    let expected_publish2: mqtt_ep::packet::GenericPacket<u16> = publish2.into();
+    assert_eq!(received_publish2_packet, expected_publish2);
+}

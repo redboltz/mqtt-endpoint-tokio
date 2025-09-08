@@ -44,6 +44,7 @@ rustls-pemfile = "1.0"
 url = "2.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 tracing-appender = { version = "0.2" }
+rcgen = "0.12"
 
 [features]
 default = []
