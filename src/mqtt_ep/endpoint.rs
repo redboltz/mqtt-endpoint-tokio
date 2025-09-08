@@ -849,11 +849,17 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
-    /// Check if a publish packet is currently being processed
+    /// Check if a PUBLISH packet is currently being processed
     ///
-    /// This method checks whether a QoS 1 or QoS 2 PUBLISH packet with the given packet ID
-    /// is currently being processed. This can be used to determine if a packet ID is in use
-    /// for publish operations before attempting to use it for other packet types.
+    /// This function is used in MQTT v5.0 to determine whether to return Success or
+    /// PacketIdentifierNotFound as PubrelReasonCode when manually sending a PUBREL packet
+    /// after receiving a PUBREC packet following a QoS2 PUBLISH packet transmission.
+    /// If true, return Success; if false, return PacketIdentifierNotFound.
+    /// Note that QoS1 PUBLISH packets are outside the scope of this function and always return false.
+    ///
+    /// This method checks whether a QoS 2 PUBLISH packet with the given packet ID
+    /// is currently being processed. This is primarily used for determining the appropriate
+    /// reason code when sending PUBREL packets in MQTT v5.0.
     ///
     /// # Arguments
     ///
@@ -861,8 +867,8 @@ where
     ///
     /// # Returns
     ///
-    /// * `Ok(true)` - The packet ID is currently being used for a publish operation
-    /// * `Ok(false)` - The packet ID is not being used for a publish operation
+    /// * `Ok(true)` - The packet ID is currently being used for QoS 2 PUBLISH processing
+    /// * `Ok(false)` - The packet ID is not being used for PUBLISH processing (QoS 1 always returns false)
     /// * `Err(ConnectionError)` - If checking failed
     ///
     /// # Errors
@@ -879,7 +885,9 @@ where
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// let packet_id = 100;
     /// if endpoint.is_publish_processing(packet_id).await? {
-    ///     println!("Packet ID {packet_id} is being used for publish");
+    ///     // For MQTT v5.0: Use Success as PubrelReasonCode
+    /// } else {
+    ///     // For MQTT v5.0: Use PacketIdentifierNotFound as PubrelReasonCode
     /// }
     /// ```
     pub async fn is_publish_processing(
