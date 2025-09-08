@@ -47,6 +47,7 @@ pub enum TransportResponse {
     RecvOk(Vec<u8>),
     RecvErr(TransportError),
     Shutdown,
+    DelayMs(u64),
 }
 
 impl Clone for TransportResponse {
@@ -61,6 +62,7 @@ impl Clone for TransportResponse {
                 TransportResponse::RecvErr(TransportError::NotConnected)
             }
             TransportResponse::Shutdown => TransportResponse::Shutdown,
+            TransportResponse::DelayMs(ms) => TransportResponse::DelayMs(*ms),
         }
     }
 }
@@ -142,11 +144,18 @@ impl TransportOps for StubTransport {
                 .unwrap()
                 .push(TransportCall::Send { data });
 
-            // Return the configured response
-            match self.get_next_response() {
-                TransportResponse::SendOk => Ok(()),
-                TransportResponse::SendErr(err) => Err(err),
-                _ => Err(TransportError::NotConnected), // Default error for unexpected response
+            // Handle DelayMs by processing all delays first
+            loop {
+                let response = self.get_next_response();
+                match response {
+                    TransportResponse::DelayMs(ms) => {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue; // Get next response after delay
+                    }
+                    TransportResponse::SendOk => return Ok(()),
+                    TransportResponse::SendErr(err) => return Err(err),
+                    _ => return Err(TransportError::NotConnected),
+                }
             }
         })
     }
@@ -164,15 +173,22 @@ impl TransportOps for StubTransport {
                 .unwrap()
                 .push(TransportCall::Recv { buffer_size });
 
-            // Return the configured response
-            match self.get_next_response() {
-                TransportResponse::RecvOk(data) => {
-                    let copy_len = std::cmp::min(data.len(), buffer.len());
-                    buffer[..copy_len].copy_from_slice(&data[..copy_len]);
-                    Ok(copy_len)
+            // Handle DelayMs by processing all delays first
+            loop {
+                let response = self.get_next_response();
+                match response {
+                    TransportResponse::DelayMs(ms) => {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue; // Get next response after delay
+                    }
+                    TransportResponse::RecvOk(data) => {
+                        let copy_len = std::cmp::min(data.len(), buffer.len());
+                        buffer[..copy_len].copy_from_slice(&data[..copy_len]);
+                        return Ok(copy_len);
+                    }
+                    TransportResponse::RecvErr(err) => return Err(err),
+                    _ => return Err(TransportError::NotConnected),
                 }
-                TransportResponse::RecvErr(err) => Err(err),
-                _ => Err(TransportError::NotConnected), // Default error for unexpected response
             }
         })
     }

@@ -53,6 +53,72 @@ async fn test_attach_accepts_connected_transport() {
     );
 }
 
+#[tokio::test]
+async fn test_attach_with_options_accepts_connected_transport() {
+    common::init_tracing();
+    let stub = StubTransport::new();
+    // No connect response needed - transport is already "connected"
+
+    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    // Attach should accept already connected transport
+    let result = endpoint
+        .attach_with_options(
+            stub.clone(),
+            mqtt_ep::Mode::Client,
+            mqtt_ep::ConnectionOption::builder()
+                .connection_establish_timeout_ms(5000u64)
+                .recv_buffer_size(65536usize)
+                .build()
+                .unwrap(),
+        )
+        .await;
+    assert!(result.is_ok(), "Attach should succeed");
+
+    // Verify no connect was called (transport was already connected)
+    let calls = stub.get_calls();
+    assert_eq!(
+        calls.len(),
+        0,
+        "No transport methods should be called during attach"
+    );
+}
+
+#[tokio::test]
+async fn test_attach_with_options_accepts_timeout() {
+    common::init_tracing();
+
+    let mut stub = StubTransport::new();
+    // Add a delay longer than the timeout to ensure timeout occurs first
+    stub.add_response(TransportResponse::DelayMs(100));
+    stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
+
+    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    let result = endpoint
+        .attach_with_options(
+            stub.clone(),
+            mqtt_ep::Mode::Client,
+            mqtt_ep::ConnectionOption::builder()
+                .connection_establish_timeout_ms(50u64) // Shorter than DelayMs
+                .build()
+                .unwrap(),
+        )
+        .await;
+
+    assert!(result.is_ok(), "Attach should succeed");
+
+    let recv_result = endpoint.recv().await;
+    match recv_result {
+        Err(mqtt_ep::ConnectionError::Transport(mqtt_ep::TransportError::Timeout)) => {
+            // Expected - timeout error should be returned
+        }
+        other => {
+            panic!("Expected TransportError::Timeout, got: {:?}", other);
+        }
+    }
+}
+
 // Note: Connection failure handling is now moved to connect_helper functions
 // This test is no longer relevant as attach() expects already connected transports
 
@@ -160,4 +226,43 @@ async fn test_multiple_recv_attempts_for_unmatched_packets() {
         recv_calls.len() >= 2,
         "Should have made multiple recv calls to find matching packet"
     );
+}
+
+#[tokio::test]
+async fn test_connection_establish_timeout_triggers() {
+    common::init_tracing();
+
+    let mut stub = StubTransport::new();
+    // Add a delay longer than the timeout to ensure timeout occurs first
+    stub.add_response(TransportResponse::DelayMs(150));
+    stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
+
+    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    let result = endpoint
+        .attach_with_options(
+            stub.clone(),
+            mqtt_ep::Mode::Client,
+            mqtt_ep::ConnectionOption::builder()
+                .connection_establish_timeout_ms(100u64) // Shorter than DelayMs
+                .recv_buffer_size(1024usize)
+                .build()
+                .unwrap(),
+        )
+        .await;
+
+    assert!(result.is_ok(), "Attach should succeed");
+
+    let recv_result = endpoint.recv().await;
+    match recv_result {
+        Err(mqtt_ep::ConnectionError::Transport(mqtt_ep::TransportError::Timeout)) => {
+            // Expected - timeout error should be returned
+        }
+        other => {
+            panic!("Expected TransportError::Timeout, got: {:?}", other);
+        }
+    }
+
+    let calls = stub.get_calls();
+    assert!(calls.len() > 0, "Should have made transport calls");
 }

@@ -1284,8 +1284,8 @@ where
                         connection_establish_timer = None;
                         connection_mode = None;
 
-                        // Perform close equivalent processing
-                        Self::notify_recv_connection_error(&mut pending_recv_requests);
+                        // Perform close equivalent processing with timeout error
+                        Self::notify_recv_timeout_error(&mut pending_recv_requests);
                         if let Some(ref mut t) = transport {
                             t.shutdown(shutdown_timeout).await;
                         }
@@ -1646,6 +1646,13 @@ where
     fn notify_recv_connection_error(pending_recv_requests: &mut RecvRequestVec<PacketIdType>) {
         for (_, response_tx) in pending_recv_requests.drain(..) {
             let _ = response_tx.send(Err(ConnectionError::NotConnected));
+        }
+    }
+
+    /// Notify all pending recv requests about timeout error
+    fn notify_recv_timeout_error(pending_recv_requests: &mut RecvRequestVec<PacketIdType>) {
+        for (_, response_tx) in pending_recv_requests.drain(..) {
+            let _ = response_tx.send(Err(ConnectionError::Transport(TransportError::Timeout)));
         }
     }
 

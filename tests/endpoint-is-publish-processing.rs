@@ -34,7 +34,7 @@ use stub_transport::{StubTransport, TransportResponse};
 type ClientEndpoint = Arc<mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>>;
 
 #[tokio::test]
-async fn test_publish_queuing_with_receive_maximum() {
+async fn test_is_publish_processing() {
     common::init_tracing();
 
     let mut stub = StubTransport::new();
@@ -74,9 +74,6 @@ async fn test_publish_queuing_with_receive_maximum() {
     let connack = mqtt_ep::packet::v5_0::Connack::builder()
         .session_present(false)
         .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
-        .props(vec![mqtt_ep::packet::ReceiveMaximum::new(1)
-            .unwrap()
-            .into()])
         .build()
         .unwrap();
 
@@ -96,101 +93,26 @@ async fn test_publish_queuing_with_receive_maximum() {
     // First publish - should succeed immediately
     let packet_id_1 = endpoint.acquire_packet_id().await.unwrap();
     assert_eq!(packet_id_1, 1, "First packet ID should be 1");
-    // Second publish - should be queued due to ReceiveMaximum = 1
-    let packet_id_2 = endpoint.acquire_packet_id().await.unwrap();
-    assert_eq!(packet_id_2, 2, "Second packet ID should be 2");
+
+    let result = endpoint.is_publish_processing(packet_id_1).await.unwrap();
+    assert!(!result);
 
     let publish1 = mqtt_ep::packet::v5_0::GenericPublish::builder()
         .topic_name("test/topic")
         .unwrap()
         .payload("payload1")
         .packet_id(packet_id_1)
-        .qos(mqtt_ep::packet::Qos::AtLeastOnce)
+        .qos(mqtt_ep::packet::Qos::ExactlyOnce)
         .build()
         .unwrap();
     stub.add_response(TransportResponse::SendOk); // For first PUBLISH packet
 
-    // Spawn task to handle subsequent packet reception
-    // Add PUBACK response for the first PUBLISH (packet_id = 1)
-    let puback = mqtt_ep::packet::v5_0::Puback::builder()
-        .packet_id(1)
-        .reason_code(mqtt_ep::result_code::PubackReasonCode::Success)
-        .build()
-        .unwrap();
-    let puback_bytes = puback.to_continuous_buffer();
-    stub.add_response(TransportResponse::RecvOk(puback_bytes));
-
-    let publish2 = mqtt_ep::packet::v5_0::GenericPublish::builder()
-        .topic_name("test/topic")
-        .unwrap()
-        .payload("payload2")
-        .packet_id(packet_id_2)
-        .qos(mqtt_ep::packet::Qos::AtLeastOnce)
-        .build()
-        .unwrap();
-    stub.add_response(TransportResponse::SendOk); // For second PUBLISH packet (eventually)
-
-    let result = endpoint
-        .get_receive_maximum_vacancy_for_send()
-        .await
-        .unwrap();
-    assert_eq!(result.unwrap(), 1);
-
-    let puback_task = tokio::spawn({
-        let endpoint = endpoint.clone();
-        async move {
-            let publish1_result = endpoint.send(publish1).await;
-            assert!(
-                publish1_result.is_ok(),
-                "First PUBLISH should succeed: {publish1_result:?}"
-            );
-
-            let result = endpoint
-                .get_receive_maximum_vacancy_for_send()
-                .await
-                .unwrap();
-            assert_eq!(result.unwrap(), 0);
-
-            let result = endpoint.send(publish2).await;
-            assert!(
-                result.is_ok(),
-                "Second PUBLISH should eventually succeed: {result:?}"
-            );
-
-            let result = endpoint
-                .get_receive_maximum_vacancy_for_send()
-                .await
-                .unwrap();
-            assert_eq!(result.unwrap(), 0);
-        }
-    });
-
-    // Give some time to ensure second publish is queued
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Receive PUBACK for first publish
-    let puback_result = timeout(Duration::from_millis(2000), endpoint.recv()).await;
+    let publish1_result = endpoint.send(publish1).await;
     assert!(
-        puback_result.is_ok(),
-        "Should receive PUBACK within timeout"
+        publish1_result.is_ok(),
+        "First PUBLISH should succeed: {publish1_result:?}"
     );
 
-    // Wait for puback_task to complete and verify it succeeded
-    let task_result = timeout(Duration::from_millis(3000), puback_task).await;
-    assert!(
-        task_result.is_ok(),
-        "puback_task should complete within timeout"
-    );
-    let task_completion = task_result.unwrap();
-    assert!(
-        task_completion.is_ok(),
-        "puback_task should complete successfully: {task_completion:?}"
-    );
-
-    // Close endpoint
-    let close_result = endpoint.close().await;
-    assert!(
-        close_result.is_ok(),
-        "Close should succeed: {close_result:?}"
-    );
+    let result = endpoint.is_publish_processing(packet_id_1).await.unwrap();
+    assert!(result);
 }
