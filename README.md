@@ -2,6 +2,8 @@
 
 [![Crates.io](https://img.shields.io/crates/v/mqtt-endpoint-tokio.svg)](https://crates.io/crates/mqtt-endpoint-tokio)
 [![Documentation](https://docs.rs/mqtt-endpoint-tokio/badge.svg)](https://docs.rs/mqtt-endpoint-tokio)
+[![CI](https://github.com/redboltz/mqtt-endpoint-tokio/workflows/CI/badge.svg)](https://github.com/redboltz/mqtt-endpoint-tokio/actions)
+[![codecov](https://codecov.io/gh/redboltz/mqtt-endpoint-tokio/branch/main/graph/badge.svg)](https://codecov.io/gh/redboltz/mqtt-endpoint-tokio)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A high-performance async MQTT client/server library for Rust with tokio, supporting MQTT v5.0 and v3.1.1 with TCP, TLS, and WebSocket transports.
