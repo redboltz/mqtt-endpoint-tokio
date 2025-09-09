@@ -119,3 +119,45 @@ async fn test_recv_filtered_compilation() {
     ]));
     let _any_future = endpoint.recv(); // This should use PacketFilter::Any internally
 }
+
+#[tokio::test]
+async fn test_packet_filter_matches_method() {
+    common::init_tracing();
+
+    // Create exclude filter for connection packets
+    let exclude_filter = mqtt_ep::PacketFilter::exclude(vec![
+        mqtt_ep::packet::PacketType::Connect,
+        mqtt_ep::packet::PacketType::Connack,
+    ]);
+
+    // Create a mock PUBLISH packet (this would normally be excluded by connection filter)
+    let publish_packet = mqtt_ep::packet::v3_1_1::Publish::builder()
+        .topic_name("test/topic")
+        .unwrap()
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .retain(false)
+        .payload(b"test message")
+        .build()
+        .unwrap();
+    let generic_publish: mqtt_ep::packet::GenericPacket<u16> = publish_packet.into();
+
+    // Create a mock CONNECT packet (this should be excluded)
+    let connect_packet = mqtt_ep::packet::v3_1_1::Connect::builder()
+        .client_id("test_client")
+        .unwrap()
+        .clean_session(true)
+        .keep_alive(60)
+        .build()
+        .unwrap();
+    let generic_connect: mqtt_ep::packet::GenericPacket<u16> = connect_packet.into();
+
+    // Test exclude filter behavior
+    assert!(
+        exclude_filter.matches(&generic_publish),
+        "PUBLISH packet should match exclude filter (not in exclude list)"
+    );
+    assert!(
+        !exclude_filter.matches(&generic_connect),
+        "CONNECT packet should not match exclude filter (in exclude list)"
+    );
+}
