@@ -219,7 +219,6 @@ where
 {
     fn default() -> Self {
         Self::builder()
-            .pingreq_send_interval_ms(0u64)
             .auto_pub_response(true)
             .auto_ping_response(true)
             .auto_map_topic_alias_send(false)
