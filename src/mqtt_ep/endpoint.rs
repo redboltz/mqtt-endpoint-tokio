@@ -849,66 +849,6 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
-    /// Check if a PUBLISH packet is currently being processed
-    ///
-    /// This function is used in MQTT v5.0 to determine whether to return Success or
-    /// PacketIdentifierNotFound as PubrelReasonCode when manually sending a PUBREL packet
-    /// after receiving a PUBREC packet following a QoS2 PUBLISH packet transmission.
-    /// If true, return Success; if false, return PacketIdentifierNotFound.
-    /// Note that QoS1 PUBLISH packets are outside the scope of this function and always return false.
-    ///
-    /// This method checks whether a QoS 2 PUBLISH packet with the given packet ID
-    /// is currently being processed. This is primarily used for determining the appropriate
-    /// reason code when sending PUBREL packets in MQTT v5.0.
-    ///
-    /// # Arguments
-    ///
-    /// * `packet_id` - The packet ID to check
-    ///
-    /// # Returns
-    ///
-    /// * `Ok(true)` - The packet ID is currently being used for QoS 2 PUBLISH processing
-    /// * `Ok(false)` - The packet ID is not being used for PUBLISH processing (QoS 1 always returns false)
-    /// * `Err(ConnectionError)` - If checking failed
-    ///
-    /// # Errors
-    ///
-    /// This method can return errors in the following cases:
-    /// - The endpoint's internal channel is closed
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
-    ///
-    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
-    /// let packet_id = 100;
-    /// if endpoint.is_publish_processing(packet_id).await? {
-    ///     // For MQTT v5.0: Use Success as PubrelReasonCode
-    /// } else {
-    ///     // For MQTT v5.0: Use PacketIdentifierNotFound as PubrelReasonCode
-    /// }
-    /// ```
-    pub async fn is_publish_processing(
-        &self,
-        packet_id: PacketIdType,
-    ) -> Result<bool, ConnectionError> {
-        let tx_send = self.get_tx_send();
-        let (response_tx, response_rx) = oneshot::channel();
-
-        tx_send
-            .send(RequestResponse::IsPublishProcessing {
-                packet_id,
-                response_tx,
-            })
-            .map_err(|_| ConnectionError::ChannelClosed)?;
-
-        response_rx
-            .await
-            .map_err(|_| ConnectionError::ChannelClosed)?
-    }
-
     /// Regulate a publish packet for store
     ///
     /// This method processes a PUBLISH packet to ensure it conforms to the connection's
@@ -1179,10 +1119,6 @@ where
                         Some(RequestResponse::GetProtocolVersion { response_tx }) => {
                             let version = connection.get_protocol_version();
                             let _ = response_tx.send(Ok(version));
-                        }
-                        Some(RequestResponse::IsPublishProcessing { packet_id, response_tx }) => {
-                            let is_processing = connection.is_publish_processing(packet_id);
-                            let _ = response_tx.send(Ok(is_processing));
                         }
                         None => break, // Channel closed
                     }

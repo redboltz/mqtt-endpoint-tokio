@@ -2,11 +2,14 @@
 
 ## Breaking changes
 
+* Remove is_publish_processing(). #18
 * Remove GenericEndpointBuilder. #11
 
 ## Other updates
 
-* Refine tests. #12
+* Add badges to the top page. #15
+* Refine tests. #12, #14
+* Refine CI. #13
 * Fix offline publish. #12
 * Optimize packet receive process. #10
 
