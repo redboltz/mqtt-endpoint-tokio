@@ -852,14 +852,13 @@ where
     /// Check if a PUBLISH packet is currently being processed
     ///
     /// This function is used in MQTT v5.0 to determine whether to return Success or
-    /// PacketIdentifierNotFound as PubrelReasonCode when manually sending a PUBREL packet
-    /// after receiving a PUBREC packet following a QoS2 PUBLISH packet transmission.
-    /// If true, return Success; if false, return PacketIdentifierNotFound.
+    /// PacketIdentifierNotFound as PubrelReasonCode when manually sending a PUBCOMP packet
+    /// after receiving a PUBREL packet.
     /// Note that QoS1 PUBLISH packets are outside the scope of this function and always return false.
     ///
     /// This method checks whether a QoS 2 PUBLISH packet with the given packet ID
     /// is currently being processed. This is primarily used for determining the appropriate
-    /// reason code when sending PUBREL packets in MQTT v5.0.
+    /// reason code when sending PUBCOMP packets in MQTT v5.0.
     ///
     /// # Arguments
     ///
