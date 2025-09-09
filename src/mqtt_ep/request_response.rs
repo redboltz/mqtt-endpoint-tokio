@@ -86,10 +86,6 @@ where
     GetProtocolVersion {
         response_tx: oneshot::Sender<Result<Version, ConnectionError>>,
     },
-    IsPublishProcessing {
-        packet_id: PacketIdType,
-        response_tx: oneshot::Sender<Result<bool, ConnectionError>>,
-    },
     RegulateForStore {
         packet: GenericPublish<PacketIdType>,
         response_tx: oneshot::Sender<Result<GenericPublish<PacketIdType>, ConnectionError>>,
