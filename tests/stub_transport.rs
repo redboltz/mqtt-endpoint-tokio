@@ -86,6 +86,7 @@ impl StubTransport {
     }
 
     /// Add a response to the queue
+    #[allow(dead_code)]
     pub fn add_response(&mut self, response: TransportResponse) {
         self.responses.lock().unwrap().push_back(response);
     }
@@ -100,6 +101,7 @@ impl StubTransport {
     }
 
     /// Get all recorded calls
+    #[allow(dead_code)]
     pub fn get_calls(&self) -> Vec<TransportCall> {
         self.calls.lock().unwrap().clone()
     }

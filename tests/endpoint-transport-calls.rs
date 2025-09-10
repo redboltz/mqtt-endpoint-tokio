@@ -119,6 +119,46 @@ async fn test_attach_with_options_accepts_timeout() {
     }
 }
 
+#[tokio::test]
+async fn test_attach_with_options_accepts_timeout_cancel() {
+    common::init_tracing();
+
+    let mut stub = StubTransport::new();
+    stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
+
+    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    let result = endpoint
+        .attach_with_options(
+            stub.clone(),
+            mqtt_ep::Mode::Client,
+            mqtt_ep::ConnectionOption::builder()
+                .connection_establish_timeout_ms(1000u64) // Long timeout that should be cancelled
+                .build()
+                .unwrap(),
+        )
+        .await;
+
+    assert!(result.is_ok(), "Attach should succeed");
+
+    // CONNACK should be received immediately without timeout
+    let recv_result = endpoint.recv().await;
+    assert!(
+        recv_result.is_ok(),
+        "Expected successful CONNACK reception, got error: {:?}",
+        recv_result.unwrap_err()
+    );
+
+    // Verify that transport recv was called
+    let calls = stub.get_calls();
+    assert!(calls.len() > 0, "Should have made transport calls");
+
+    let has_recv = calls
+        .iter()
+        .any(|call| matches!(call, TransportCall::Recv { .. }));
+    assert!(has_recv, "Should have made recv call to transport");
+}
+
 // Note: Connection failure handling is now moved to connect_helper functions
 // This test is no longer relevant as attach() expects already connected transports
 
@@ -144,7 +184,6 @@ async fn test_recv_calls_transport_recv() {
 
     // Check the calls made to transport
     let calls = stub.get_calls();
-    println!("Transport calls: {calls:?}");
 
     // Should have at least one recv call
     assert!(calls.len() >= 1, "Should have recv calls");
@@ -174,7 +213,6 @@ async fn test_close_calls_shutdown() {
 
     // Verify shutdown was called
     let calls = stub.get_calls();
-    println!("Transport calls: {calls:?}");
 
     assert!(calls.len() >= 1, "Should have shutdown calls");
 
@@ -215,7 +253,6 @@ async fn test_multiple_recv_attempts_for_unmatched_packets() {
 
     // Check the calls made to transport
     let calls = stub.get_calls();
-    println!("Transport calls: {calls:?}");
 
     // Should have multiple recv calls as it tries to find matching packet
     let recv_calls: Vec<_> = calls
