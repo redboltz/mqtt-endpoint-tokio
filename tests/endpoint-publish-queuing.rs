@@ -31,7 +31,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 
 use stub_transport::{StubTransport, TransportResponse};
 
-type ClientEndpoint = Arc<mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_publish_queuing_with_receive_maximum() {
@@ -40,12 +40,12 @@ async fn test_publish_queuing_with_receive_maximum() {
     let mut stub = StubTransport::new();
 
     // Create endpoint and connection options with queuing enabled
-    let connection_options = mqtt_ep::connection_option::GenericConnectionOption::<u16>::builder()
+    let connection_options = mqtt_ep::connection_option::ConnectionOption::builder()
         .queuing_receive_maximum(true)
         .build()
         .unwrap();
 
-    let endpoint: ClientEndpoint = Arc::new(mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0));
+    let endpoint = Arc::new(ClientEndpoint::new(mqtt_ep::Version::V5_0));
 
     // Attach transport with options
     let attach_result = endpoint
@@ -100,7 +100,7 @@ async fn test_publish_queuing_with_receive_maximum() {
     let packet_id_2 = endpoint.acquire_packet_id().await.unwrap();
     assert_eq!(packet_id_2, 2, "Second packet ID should be 2");
 
-    let publish1 = mqtt_ep::packet::v5_0::GenericPublish::builder()
+    let publish1 = mqtt_ep::packet::v5_0::Publish::builder()
         .topic_name("test/topic")
         .unwrap()
         .payload("payload1")
@@ -120,7 +120,7 @@ async fn test_publish_queuing_with_receive_maximum() {
     let puback_bytes = puback.to_continuous_buffer();
     stub.add_response(TransportResponse::RecvOk(puback_bytes));
 
-    let publish2 = mqtt_ep::packet::v5_0::GenericPublish::builder()
+    let publish2 = mqtt_ep::packet::v5_0::Publish::builder()
         .topic_name("test/topic")
         .unwrap()
         .payload("payload2")

@@ -25,7 +25,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 mod common;
 mod stub_transport;
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_get_qos2_publish_handled_pids() {
@@ -35,7 +35,7 @@ async fn test_get_qos2_publish_handled_pids() {
     let mut stub = stub_transport::StubTransport::new();
 
     // Test that the get_stored_packets API compiles correctly
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Test initial state - pids should be empty
     let result = endpoint.get_qos2_publish_handled_pids().await;
@@ -79,7 +79,7 @@ async fn test_get_qos2_publish_handled_pids() {
 
     // Verify we received the expected packet
     match received_packet.unwrap() {
-        mqtt_ep::packet::GenericPacket::V3_1_1Publish(publish) => {
+        mqtt_ep::packet::Packet::V3_1_1Publish(publish) => {
             assert_eq!(publish.packet_id(), Some(packet_id));
             assert_eq!(publish.qos(), mqtt_ep::packet::Qos::ExactlyOnce);
         }

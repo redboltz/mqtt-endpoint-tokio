@@ -38,29 +38,26 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mqtt-endpoint-tokio = "0.1"
+mqtt-endpoint-tokio = "0.4"
 ```
 
 ### Basic Client Example
 
 ```rust
-use mqtt_endpoint_tokio::mqtt_ep::{
-    Endpoint, Version, transport::{TcpTransport, connect_helper}
-};
-use mqtt_endpoint_tokio::mqtt_ep::packet::v5_0::*;
+use mqtt_endpoint_tokio::mqtt_ep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create endpoint
-    let endpoint = Endpoint::new(Version::V5_0);
+    let endpoint = mqtt_ep::endpoint::Endpoint::new(mqtt_ep::Version::V5_0);
 
     // Connect to broker
-    let tcp_stream = connect_helper::connect_tcp("127.0.0.1:1883", None).await?;
-    let transport = TcpTransport::from_stream(tcp_stream);
-    endpoint.attach(transport).await?;
+    let tcp_stream = mqtt_ep::transport::connect_helper::connect_tcp("127.0.0.1:1883", None).await?;
+    let transport = mqtt_ep::transport::TcpTransport::from_stream(tcp_stream);
+    endpoint.attach(transport, mqtt_ep::endpoint::Mode::Client).await?;
 
     // Send CONNECT packet
-    let connect = Connect::builder()
+    let connect = mqtt_ep::packet::v5_0::Connect::builder()
         .client_id("rust-client")
         .unwrap()
         .keep_alive(60)
@@ -71,9 +68,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     endpoint.send(connect).await?;
 
     // Receive CONNACK
-    if let Some(packet) = endpoint.recv().await? {
-        println!("Received: {packet:?}");
-    }
+    let packet = endpoint.recv().await?;
+    println!("Received: {packet:?}");
 
     Ok(())
 }
@@ -82,19 +78,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### WebSocket Example
 
 ```rust
-use mqtt_endpoint_tokio::mqtt_ep::transport::{WebSocketTransport, connect_helper};
+use mqtt_endpoint_tokio::mqtt_ep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect via WebSocket
-    let ws_stream = connect_helper::connect_tcp_ws(
+    let ws_stream = mqtt_ep::transport::connect_helper::connect_tcp_ws(
         "127.0.0.1:8080",
         "/mqtt",
         None,
         None
     ).await?;
 
-    let transport = WebSocketTransport::from_tcp_client_stream(ws_stream.into_inner());
+    let transport = mqtt_ep::transport::WebSocketTransport::from_tcp_client_stream(ws_stream.into_inner());
     // ... rest of MQTT communication
 
     Ok(())
@@ -104,19 +100,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 ### TLS Example
 
 ```rust
-use mqtt_endpoint_tokio::mqtt_ep::transport::{TlsTransport, connect_helper};
+use mqtt_endpoint_tokio::mqtt_ep;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Connect via TLS
-    let tls_stream = connect_helper::connect_tcp_tls(
+    let tls_stream = mqtt_ep::transport::connect_helper::connect_tcp_tls(
         "broker.example.com:8883",
         "broker.example.com",
         None,
         None
     ).await?;
 
-    let transport = TlsTransport::from_stream(tls_stream);
+    let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
     // ... rest of MQTT communication
 
     Ok(())
@@ -137,11 +133,13 @@ This library is built on top of [mqtt-protocol-core](https://crates.io/crates/mq
 The library supports both standard u16 packet IDs and extended u32 packet IDs for broker clustering scenarios:
 
 ```rust
+use mqtt_endpoint_tokio::mqtt_ep;
+
 // Standard u16 packet IDs
-type StandardEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
+type StandardEndpoint = mqtt_ep::endpoint::Endpoint<mqtt_ep::role::Client>;
 
 // Extended u32 packet IDs for broker clustering
-type ExtendedEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u32>;
+type ExtendedEndpoint = mqtt_ep::endpoint::GenericEndpoint<mqtt_ep::role::Client, u32>;
 ```
 
 ## Error Handling
@@ -149,13 +147,13 @@ type ExtendedEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u32>;
 Comprehensive error types provide detailed information about failures:
 
 ```rust
-use mqtt_endpoint_tokio::mqtt_ep::ConnectionError;
+use mqtt_endpoint_tokio::mqtt_ep;
 
 match endpoint.send(packet).await {
     Ok(()) => println!("Packet sent"),
-    Err(ConnectionError::NotConnected) => println!("Need to connect first"),
-    Err(ConnectionError::Transport(e)) => println!("Network error: {e}"),
-    Err(ConnectionError::Mqtt(e)) => println!("Protocol error: {e:?}"),
+    Err(mqtt_ep::connection_error::ConnectionError::NotConnected) => println!("Need to connect first"),
+    Err(mqtt_ep::connection_error::ConnectionError::Transport(e)) => println!("Network error: {e}"),
+    Err(mqtt_ep::connection_error::ConnectionError::Mqtt(e)) => println!("Protocol error: {e:?}"),
     Err(e) => println!("Other error: {e}"),
 }
 ```

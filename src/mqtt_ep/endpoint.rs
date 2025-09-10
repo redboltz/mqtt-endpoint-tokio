@@ -52,8 +52,27 @@ pub enum Mode {
     Server,
 }
 
-/// Builder for creating GenericEndpoint with custom configuration
-
+/// Generic MQTT endpoint that supports custom packet ID types.
+///
+/// This is the core MQTT endpoint implementation that allows for custom packet ID types
+/// through the `PacketIdType` generic parameter. While the MQTT specification uses u16
+/// for packet IDs, this generic implementation enables extending to u32 for scenarios
+/// like broker clustering where packet ID exhaustion needs to be prevented.
+///
+/// # Type Parameters
+/// - `Role`: Specifies whether this endpoint operates as a [`client::Client`] or [`server::Server`]
+/// - `PacketIdType`: The type used for MQTT packet IDs (typically `u16` for standard MQTT)
+///
+/// # Example
+/// ```no_run
+/// use mqtt_endpoint_tokio::mqtt_ep;
+///
+/// // Standard endpoint with u16 packet IDs
+/// type StandardEndpoint = mqtt_ep::endpoint::GenericEndpoint<mqtt_ep::role::Client, u16>;
+///
+/// // Extended endpoint with u32 packet IDs for broker clustering
+/// type ExtendedEndpoint = mqtt_ep::endpoint::GenericEndpoint<mqtt_ep::role::Client, u32>;
+/// ```
 pub struct GenericEndpoint<Role, PacketIdType>
 where
     Role: RoleType + Send + Sync,
@@ -125,7 +144,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// ```
@@ -157,6 +175,7 @@ where
     /// # Arguments
     ///
     /// * `transport` - The already connected transport implementation
+    /// * `mode` - Connection mode (Client expects CONNACK, Server expects CONNECT)
     ///
     /// # Returns
     ///
@@ -173,13 +192,13 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
+    ///
     /// use mqtt_endpoint_tokio::mqtt_ep::transport::connect_helper;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
-    /// let tcp_stream = connect_helper::connect_tcp("127.0.0.1:1883", None).await?;
-    /// let transport = TcpTransport::from_stream(tcp_stream);
-    /// endpoint.attach(transport, mqtt_ep::Mode::Client).await?;
+    /// let tcp_stream = mqtt_ep::transport::connect_helper::connect_tcp("127.0.0.1:1883", None).await?;
+    /// let transport = mqtt_ep::transport::TcpTransport::from_stream(tcp_stream);
+    /// endpoint.attach(transport, mqtt_ep::endpoint::Mode::Client).await?;
     /// ```
     pub async fn attach<T>(&self, transport: T, mode: Mode) -> Result<(), ConnectionError>
     where
@@ -209,6 +228,7 @@ where
     /// # Arguments
     ///
     /// * `transport` - The already connected transport implementation
+    /// * `mode` - Connection mode (Client expects CONNACK, Server expects CONNECT)
     /// * `options` - Custom connection options for behavior configuration
     ///
     /// # Returns
@@ -227,14 +247,14 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
+    ///
     /// use mqtt_endpoint_tokio::mqtt_ep::transport::connect_helper;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// let options = mqtt_ep::connection_option::GenericConnectionOption::<u16>::default();
-    /// let tls_stream = connect_helper::connect_tcp_tls("127.0.0.1:8883", "localhost", None, None).await?;
-    /// let transport = TlsTransport::from_stream(tls_stream);
-    /// endpoint.attach_with_options(transport, mqtt_ep::Mode::Client, options).await?;
+    /// let tls_stream = mqtt_ep::transport::connect_helper::connect_tcp_tls("127.0.0.1:8883", "localhost", None, None).await?;
+    /// let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
+    /// endpoint.attach_with_options(transport, mqtt_ep::endpoint::Mode::Client, options).await?;
     /// ```
     pub async fn attach_with_options<T>(
         &self,
@@ -285,7 +305,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect and use endpoint ...
@@ -342,7 +361,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -394,7 +412,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -432,7 +449,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -480,7 +496,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -522,7 +537,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -568,7 +582,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -615,7 +628,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -659,7 +671,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect and send some packets ...
@@ -704,7 +715,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// endpoint.set_offline_publish(true).await?;
@@ -745,7 +755,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... process some QoS 2 publishes ...
@@ -788,7 +797,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// // ... connect to transport ...
@@ -830,7 +838,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// let version = endpoint.get_protocol_version().await?;
@@ -874,7 +881,6 @@ where
     ///
     /// ```ignore
     /// use mqtt_endpoint_tokio::mqtt_ep;
-    /// use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// let publish_packet = mqtt_ep::packet::v5_0::GenericPublish::new("topic", "payload");
@@ -947,8 +953,6 @@ where
         let mut pending_packet_id_requests: Vec<
             oneshot::Sender<Result<PacketIdType, ConnectionError>>,
         > = Vec::new();
-        let mut pending_close_notifications: Vec<oneshot::Sender<Result<(), ConnectionError>>> =
-            Vec::new();
         let mut pending_recv_requests: RecvRequestVec<PacketIdType> = Vec::new();
         let mut transport: Option<Box<dyn TransportOps + Send>> = None;
         let mut recv_buffer_size = 4096usize; // Default, will be updated when transport is attached
@@ -1096,7 +1100,6 @@ where
                             Self::handle_close_request(
                                 &mut connection,
                                 &mut transport,
-                                &mut pending_close_notifications,
                                 (&mut pingreq_send_timer, &mut pingreq_recv_timer, &mut pingresp_recv_timer),
                                 &mut pending_packet_id_requests,
                                 &mut packet_queue,
@@ -1257,31 +1260,21 @@ where
         }
     }
 
-    /// Handle close request with proper queueing
+    /// Handle close request
     async fn handle_close_request(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         transport: &mut Option<Box<dyn TransportOps + Send>>,
-        pending_close_notifications: &mut Vec<oneshot::Sender<Result<(), ConnectionError>>>,
         timers: TimerTupleRef<'_>,
         pending_packet_id_requests: &mut PacketIdRequestVec<PacketIdType>,
         packet_queue: &mut PacketQueueVec<PacketIdType>,
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     ) {
-        if pending_close_notifications.len() > 0 {
-            // Close already in progress - add to queue
-            pending_close_notifications.push(response_tx);
-            return;
-        }
-
         // Check if already disconnected
         if transport.is_none() {
             // Already disconnected - immediately notify
             let _ = response_tx.send(Ok(()));
             return;
         }
-
-        // Start close process
-        pending_close_notifications.push(response_tx);
 
         // Shutdown transport first
         if let Some(ref mut t) = transport {
@@ -1307,10 +1300,8 @@ where
         // Clear transport after processing events
         *transport = None;
 
-        // Notify all pending close requests
-        for tx in pending_close_notifications.drain(..) {
-            let _ = tx.send(Ok(()));
-        }
+        // Notify close request completion
+        let _ = response_tx.send(Ok(()));
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1649,4 +1640,9 @@ where
     }
 }
 
+/// Type alias for [`GenericEndpoint`] with standard u16 packet ID type.
+///
+/// This is the standard MQTT endpoint implementation that uses u16 for packet IDs
+/// as specified in the MQTT protocol. For most use cases, this is the recommended
+/// type to use.
 pub type Endpoint<Role> = GenericEndpoint<Role, u16>;

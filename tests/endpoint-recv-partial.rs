@@ -36,7 +36,7 @@ async fn test_receive_partial() {
     common::init_tracing();
 
     let mut stub = StubTransport::new();
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach transport
     let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
@@ -129,8 +129,11 @@ async fn test_receive_partial() {
 
     // Verify first publish - compare with original packet
     let received_publish1_packet = received_publish1.unwrap();
-    let expected_publish1: mqtt_ep::packet::GenericPacket<u16> = publish1.into();
-    assert_eq!(received_publish1_packet, expected_publish1);
+    let expected_publish1: mqtt_ep::packet::Packet = publish1.into();
+    assert_eq!(
+        received_publish1_packet, expected_publish1,
+        "First received PUBLISH should match the original packet"
+    );
 
     // Send third part (remaining half of publish2)
     stub.add_response(TransportResponse::RecvOk(part3));
@@ -147,6 +150,125 @@ async fn test_receive_partial() {
 
     // Verify second publish - compare with original packet
     let received_publish2_packet = received_publish2.unwrap();
-    let expected_publish2: mqtt_ep::packet::GenericPacket<u16> = publish2.into();
-    assert_eq!(received_publish2_packet, expected_publish2);
+    let expected_publish2: mqtt_ep::packet::Packet = publish2.into();
+    assert_eq!(
+        received_publish2_packet, expected_publish2,
+        "Second received PUBLISH should match the original packet"
+    );
+}
+
+#[tokio::test]
+async fn test_receive_error() {
+    common::init_tracing();
+
+    let mut stub = StubTransport::new();
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    // Attach transport
+    let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
+    assert!(
+        attach_result.is_ok(),
+        "Attach should succeed: {attach_result:?}"
+    );
+
+    // Send CONNECT packet
+    let connect_packet = mqtt_ep::packet::v3_1_1::Connect::builder()
+        .client_id("test_client")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+
+    stub.add_response(TransportResponse::SendOk);
+    let send_result = endpoint.send(connect_packet).await;
+    assert!(send_result.is_ok(), "CONNECT should be sent successfully");
+
+    // Prepare CONNACK response
+    let connack_packet = mqtt_ep::packet::v3_1_1::Connack::builder()
+        .session_present(false)
+        .return_code(mqtt_ep::result_code::ConnectReturnCode::Accepted)
+        .build()
+        .unwrap();
+    let connack_bytes = connack_packet.to_continuous_buffer();
+
+    stub.add_response(TransportResponse::RecvOk(connack_bytes));
+
+    // Receive CONNACK
+    let connack_result = timeout(Duration::from_millis(1000), endpoint.recv()).await;
+    assert!(connack_result.is_ok(), "Should receive CONNACK");
+    let received_connack = connack_result.unwrap();
+    assert!(
+        received_connack.is_ok(),
+        "CONNACK should be received successfully"
+    );
+
+    // Now test recv error scenario - stub will return an error on next recv
+    let io_error = std::io::Error::new(std::io::ErrorKind::ConnectionAborted, "Connection lost");
+    stub.add_response(TransportResponse::RecvErr(
+        mqtt_ep::transport::TransportError::Io(io_error),
+    ));
+
+    // Try to receive - this should result in an error
+    let recv_error_result = timeout(Duration::from_millis(1000), endpoint.recv()).await;
+    assert!(recv_error_result.is_ok(), "Should complete recv operation");
+    let recv_error = recv_error_result.unwrap();
+
+    // Verify that recv returned an error
+    assert!(recv_error.is_err(), "recv should return an error");
+
+    match recv_error {
+        Err(mqtt_ep::connection_error::ConnectionError::Transport(transport_err)) => {
+            match transport_err {
+                mqtt_ep::transport::TransportError::Io(io_err) => {
+                    assert_eq!(
+                        io_err.kind(),
+                        std::io::ErrorKind::ConnectionAborted,
+                        "Error kind should match"
+                    );
+                    assert_eq!(
+                        io_err.to_string(),
+                        "Connection lost",
+                        "Error message should match"
+                    );
+                    // Successfully received expected transport IO error
+                }
+                other => panic!("Expected IO error, got: {other:?}"),
+            }
+        }
+        Err(mqtt_ep::connection_error::ConnectionError::NotConnected) => {
+            // The endpoint might convert transport errors to NotConnected
+            // This is also a valid behavior as it indicates the connection is lost
+        }
+        Err(other_err) => panic!("Expected Transport or NotConnected error, got: {other_err:?}"),
+        Ok(_) => panic!("Expected error, but got success"),
+    }
+
+    // Verify that subsequent recv operations also fail due to disconnected state
+    let recv_after_error_result = timeout(Duration::from_millis(1000), endpoint.recv()).await;
+    assert!(
+        recv_after_error_result.is_ok(),
+        "Should complete recv operation"
+    );
+    let recv_after_error = recv_after_error_result.unwrap();
+
+    assert!(
+        recv_after_error.is_err(),
+        "recv after error should also fail"
+    );
+    match recv_after_error {
+        Err(mqtt_ep::connection_error::ConnectionError::NotConnected) => {
+            // Successfully verified that endpoint is disconnected after transport error
+        }
+        Err(mqtt_ep::connection_error::ConnectionError::Transport(_)) => {
+            // Also acceptable - might get another transport error
+        }
+        Err(mqtt_ep::connection_error::ConnectionError::ChannelClosed) => {
+            // Also acceptable - endpoint channels might be closed
+        }
+        Err(other_err) => {
+            panic!("Unexpected error type after transport failure, got: {other_err:?}. Expected NotConnected, Transport, or ChannelClosed");
+        }
+        Ok(_) => panic!("Expected error due to disconnected state, but got success"),
+    }
 }

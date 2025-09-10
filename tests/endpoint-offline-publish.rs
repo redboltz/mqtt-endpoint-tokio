@@ -23,7 +23,6 @@
 mod common;
 mod stub_transport;
 
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 
@@ -31,7 +30,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 
 use stub_transport::{StubTransport, TransportResponse};
 
-type ClientEndpoint = Arc<mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_offline_publish() {
@@ -40,19 +39,19 @@ async fn test_offline_publish() {
     let mut stub = StubTransport::new();
 
     // Create endpoint and connection options with queuing enabled
-    let connection_options = mqtt_ep::connection_option::GenericConnectionOption::<u16>::builder()
+    let connection_options = mqtt_ep::connection_option::ConnectionOption::builder()
         .queuing_receive_maximum(true)
         .build()
         .unwrap();
 
-    let endpoint: ClientEndpoint = Arc::new(mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0));
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V5_0);
     let _ = endpoint.set_offline_publish(true).await;
 
     // First publish - should be stored offline since no transport is attached
     let packet_id_1 = endpoint.acquire_packet_id().await.unwrap();
     assert_eq!(packet_id_1, 1, "First packet ID should be 1");
 
-    let publish1 = mqtt_ep::packet::v5_0::GenericPublish::builder()
+    let publish1 = mqtt_ep::packet::v5_0::Publish::builder()
         .topic_name("test/topic")
         .unwrap()
         .payload("payload1")

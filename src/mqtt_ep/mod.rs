@@ -31,7 +31,7 @@ pub mod packet {
 
     // Generic packet types
     pub use mqtt_protocol_core::mqtt::packet::{
-        GenericPacket, GenericStorePacket, Packet, PacketType, Qos, SubEntry, SubOpts,
+        GenericPacket, GenericStorePacket, Packet, PacketType, Qos, StorePacket, SubEntry, SubOpts,
     };
 
     // Version-specific packets

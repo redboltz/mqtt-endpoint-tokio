@@ -57,7 +57,7 @@ fn init_tracing() {
     });
 }
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::main]
 async fn main() {
@@ -109,18 +109,15 @@ async fn main() {
     println!("QoS: {qos_level:?}");
     println!("Payload: {payload}");
 
-    // Create socket address string
-    let addr = format!("{hostname}:{port}");
-
     // Create MQTT endpoint
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
-    // Connect to the broker and create transport
-    println!("Connecting to broker...");
-    let tcp_stream = match mqtt_ep::transport::connect_helper::connect_tcp(&addr, None).await {
+    // Connect to the broker with hostname resolution support
+    println!("Resolving hostname and connecting to broker...");
+    let tcp_stream = match tokio::net::TcpStream::connect(format!("{hostname}:{port}")).await {
         Ok(stream) => stream,
         Err(e) => {
-            eprintln!("Error: Failed to connect to broker: {e:?}");
+            eprintln!("Error: Failed to connect to broker (check hostname/IP and port): {e:?}");
             process::exit(1);
         }
     };
@@ -156,7 +153,7 @@ async fn main() {
     println!("Waiting for CONNACK...");
     match endpoint.recv().await {
         Ok(packet) => match packet {
-            mqtt_ep::packet::GenericPacket::V3_1_1Connack(connack) => {
+            mqtt_ep::packet::Packet::V3_1_1Connack(connack) => {
                 if connack.return_code() != mqtt_ep::result_code::ConnectReturnCode::Accepted {
                     eprintln!("Error: Connection refused: {:?}", connack.return_code());
                     process::exit(1);
@@ -215,7 +212,7 @@ async fn main() {
             println!("Waiting for PUBACK...");
             match endpoint.recv().await {
                 Ok(packet) => match packet {
-                    mqtt_ep::packet::GenericPacket::V3_1_1Puback(puback) => {
+                    mqtt_ep::packet::Packet::V3_1_1Puback(puback) => {
                         println!(
                             "Message published successfully (QoS 1 - received PUBACK for packet ID {})",
                             puback.packet_id()
@@ -241,7 +238,7 @@ async fn main() {
             match endpoint.recv().await {
                 Ok(packet) => {
                     match packet {
-                        mqtt_ep::packet::GenericPacket::V3_1_1Pubrec(pubrec) => {
+                        mqtt_ep::packet::Packet::V3_1_1Pubrec(pubrec) => {
                             println!("Received PUBREC for packet ID {}", pubrec.packet_id());
 
                             // Send PUBREL
@@ -258,7 +255,7 @@ async fn main() {
                             println!("Waiting for PUBCOMP...");
                             match endpoint.recv().await {
                                 Ok(packet) => match packet {
-                                    mqtt_ep::packet::GenericPacket::V3_1_1Pubcomp(pubcomp) => {
+                                    mqtt_ep::packet::Packet::V3_1_1Pubcomp(pubcomp) => {
                                         println!(
                                             "Message published successfully (QoS 2 - received PUBCOMP for packet ID {})",
                                             pubcomp.packet_id()

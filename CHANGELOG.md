@@ -2,13 +2,14 @@
 
 ## Breaking changes
 
+* Update connection_option::pingreq_send_interval_ms default value from 0 to None. #19
 * Remove is_publish_processing(). #18
 * Remove GenericEndpointBuilder. #11
 
 ## Other updates
 
 * Add badges to the top page. #15
-* Refine tests. #12, #14
+* Refine tests. #12, #14, #19
 * Refine CI. #13
 * Fix offline publish. #12
 * Optimize packet receive process. #10
