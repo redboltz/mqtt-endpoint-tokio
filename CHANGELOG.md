@@ -1,3 +1,7 @@
+# 0.4.1
+
+* Add rust-version 1.86.0 to Cargo.toml. #21
+
 # 0.4.0
 
 ## Breaking changes
