@@ -61,13 +61,23 @@ pub struct GenericConnectionOption<PacketIdType>
 where
     PacketIdType: IsPacketId,
 {
-    /// PING request send interval in milliseconds
+    /// PINGREQ send interval override in milliseconds
     ///
-    /// Controls how frequently PINGREQ packets are sent to maintain the connection.
-    /// A value of 0 disables automatic PING sending.
+    /// Overrides the interval for sending PINGREQ packets to maintain the connection alive.
+    /// PINGREQ is sent after the interval has elapsed since the last packet of any type was sent.
+    ///
+    /// The send interval is determined by the following priority order:
+    /// 1. User setting by this option
+    /// 2. ServerKeepAlive property value in received CONNACK packet
+    /// 3. KeepAlive value in sent CONNECT packet
+    ///
+    /// # Values
+    ///
+    /// * `Some(value)` - Override with specified milliseconds. If 0, no PINGREQ is sent.
+    /// * `None` - Do not override, use CONNACK ServerKeepAlive or CONNECT KeepAlive instead.
     ///
     /// # Default
-    /// 0 (disabled)
+    /// None (no override)
     #[builder(default = "None", setter(into, strip_option))]
     #[getset(get = "pub")]
     pingreq_send_interval_ms: Option<u64>,

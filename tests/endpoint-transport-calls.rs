@@ -30,7 +30,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 
 use stub_transport::{StubTransport, TransportCall, TransportResponse};
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_attach_accepts_connected_transport() {
@@ -38,7 +38,7 @@ async fn test_attach_accepts_connected_transport() {
     let stub = StubTransport::new();
     // No connect response needed - transport is already "connected"
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach should accept already connected transport
     let result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
@@ -59,7 +59,7 @@ async fn test_attach_with_options_accepts_connected_transport() {
     let stub = StubTransport::new();
     // No connect response needed - transport is already "connected"
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach should accept already connected transport
     let result = endpoint
@@ -93,7 +93,7 @@ async fn test_attach_with_options_accepts_timeout() {
     stub.add_response(TransportResponse::DelayMs(100));
     stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     let result = endpoint
         .attach_with_options(
@@ -126,7 +126,7 @@ async fn test_attach_with_options_accepts_timeout_cancel() {
     let mut stub = StubTransport::new();
     stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     let result = endpoint
         .attach_with_options(
@@ -172,7 +172,7 @@ async fn test_recv_calls_transport_recv() {
     let connack_packet = vec![0x20, 0x02, 0x00, 0x00]; // CONNACK with success
     stub.add_response(TransportResponse::RecvOk(connack_packet));
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach first
     let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
@@ -201,7 +201,7 @@ async fn test_close_calls_shutdown() {
     let mut stub = StubTransport::new();
     stub.add_response(TransportResponse::Shutdown);
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach first
     let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
@@ -239,7 +239,7 @@ async fn test_multiple_recv_attempts_for_unmatched_packets() {
     stub.add_response(TransportResponse::RecvOk(pingresp_packet));
     stub.add_response(TransportResponse::RecvOk(connack_packet));
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Attach first
     let attach_result = endpoint.attach(stub.clone(), mqtt_ep::Mode::Client).await;
@@ -274,7 +274,7 @@ async fn test_connection_establish_timeout_triggers() {
     stub.add_response(TransportResponse::DelayMs(150));
     stub.add_response(TransportResponse::RecvOk(vec![0x20, 0x02, 0x00, 0x00])); // CONNACK
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     let result = endpoint
         .attach_with_options(

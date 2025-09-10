@@ -27,13 +27,13 @@ use mqtt_endpoint_tokio::mqtt_ep;
 
 mod common;
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_packet_id_when_available_api_compilation() {
     common::init_tracing();
     // Test that the acquire_packet_id_when_available API compiles correctly
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Test that the method exists and compiles
     // Use timeout to prevent indefinite waiting
@@ -47,12 +47,15 @@ async fn test_packet_id_when_available_api_compilation() {
     // Most importantly, the API exists and compiles correctly
     match result {
         Ok(inner_result) => {
-            // Method completed - could be success or error
-            println!("Method completed with result: {inner_result:?}");
+            // Method completed - verify it's a proper result type
+            assert!(
+                inner_result.is_ok() || inner_result.is_err(),
+                "Method should return a proper Result type: {inner_result:?}"
+            );
         }
         Err(_timeout_error) => {
             // Timeout occurred - this is also fine for compilation test
-            println!("Method timed out - API compiles correctly");
+            // The API exists and compiles correctly
         }
     }
 }
@@ -60,17 +63,65 @@ async fn test_packet_id_when_available_api_compilation() {
 #[tokio::test]
 async fn test_acquire_unique_vs_when_available_api() {
     common::init_tracing();
-    // Test that both packet ID acquisition methods compile
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
-    // Both methods should compile and have similar signatures
-    let _immediate_future = endpoint.acquire_packet_id();
-    let _waiting_future = endpoint.acquire_packet_id_when_available();
+    // 1. Call acquire_packet_id() 65535 times to exhaust all packet IDs
+    let mut acquired_ids = Vec::new();
+    for i in 0..65535 {
+        let packet_id_result = endpoint.acquire_packet_id().await;
+        assert!(
+            packet_id_result.is_ok(),
+            "acquire_packet_id should succeed for iteration {i}: {packet_id_result:?}"
+        );
+        let packet_id = packet_id_result.unwrap();
+        acquired_ids.push(packet_id);
+    }
 
-    // Test that they both return similar result types (compilation test)
-    // Both should return Result<u16, SendError>
-    std::mem::drop(Box::pin(_immediate_future)
-        as std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>>);
-    std::mem::drop(Box::pin(_waiting_future)
-        as std::pin::Pin<Box<dyn std::future::Future<Output = Result<u16, _>>>>);
+    // 2. Call acquire_packet_id_when_available() - this should not return immediately
+    let when_available_future = endpoint.acquire_packet_id_when_available();
+    tokio::pin!(when_available_future);
+
+    // Verify that acquire_packet_id_when_available() doesn't complete immediately
+    let result = timeout(Duration::from_millis(100), &mut when_available_future).await;
+    assert!(
+        result.is_err(),
+        "acquire_packet_id_when_available should not complete immediately when all IDs are taken"
+    );
+
+    // 3. Release packet ID 123
+    let release_result = endpoint.release_packet_id(123).await;
+    assert!(
+        release_result.is_ok(),
+        "release_packet_id should succeed: {release_result:?}"
+    );
+
+    // 4. Now acquire_packet_id_when_available() should return with 123
+    let result = timeout(Duration::from_millis(1000), when_available_future).await;
+    let packet_id = result
+        .expect("acquire_packet_id_when_available should complete after release")
+        .expect("acquire_packet_id_when_available should succeed");
+
+    assert_eq!(
+        packet_id, 123,
+        "acquire_packet_id_when_available should return the released packet ID 123"
+    );
+
+    // Clean up: release all acquired packet IDs
+    for id in acquired_ids {
+        if id != 123 {
+            // 123 was already released and reacquired
+            let cleanup_result = endpoint.release_packet_id(id).await;
+            assert!(
+                cleanup_result.is_ok(),
+                "cleanup release_packet_id should succeed for ID {id}: {cleanup_result:?}"
+            );
+        }
+    }
+
+    // Also release the reacquired ID 123
+    let final_release = endpoint.release_packet_id(123).await;
+    assert!(
+        final_release.is_ok(),
+        "final release of ID 123 should succeed: {final_release:?}"
+    );
 }

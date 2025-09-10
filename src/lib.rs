@@ -41,7 +41,6 @@
 //!
 //! ```ignore
 //! use mqtt_endpoint_tokio::mqtt_ep;
-//! use mqtt_endpoint_tokio::mqtt_ep::prelude::*;
 //!
 //! // Create a client endpoint
 //! let endpoint = mqtt_ep::endpoint::Endpoint::new(mqtt_ep::Version::V5_0);
@@ -65,7 +64,9 @@
 //!
 //! - [`mqtt_ep::endpoint`]: Core endpoint functionality for both client and server
 //! - [`mqtt_ep::transport`]: Transport layer implementations (TCP, TLS, WebSocket)
+//! - [`mqtt_ep::connection_option`]: Configuration options for connection behavior
 //! - [`mqtt_ep::packet`]: MQTT packet types and builders
+//! - [`mqtt_ep::packet_filter`]: Packet filtering for selective message reception
 //! - [`mqtt_ep::connection_error`]: Error handling for connection operations
 //!
 //! ## Generic Packet ID Support

@@ -27,7 +27,7 @@ use mqtt_endpoint_tokio::mqtt_ep;
 
 mod common;
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::test]
 async fn test_packet_filter_matching() {
@@ -83,7 +83,7 @@ async fn test_recv_filtered_compilation() {
     // This test verifies that the recv_filtered API compiles correctly
     // We can't easily test the actual filtering without setting up a full MQTT connection
 
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Test that the API compiles - we can't actually receive anything without a real connection
     // Try to receive with timeout
@@ -139,7 +139,7 @@ async fn test_packet_filter_matches_method() {
         .payload(b"test message")
         .build()
         .unwrap();
-    let generic_publish: mqtt_ep::packet::GenericPacket<u16> = publish_packet.into();
+    let publish: mqtt_ep::packet::Packet = publish_packet.into();
 
     // Create a mock CONNECT packet (this should be excluded)
     let connect_packet = mqtt_ep::packet::v3_1_1::Connect::builder()
@@ -149,15 +149,15 @@ async fn test_packet_filter_matches_method() {
         .keep_alive(60)
         .build()
         .unwrap();
-    let generic_connect: mqtt_ep::packet::GenericPacket<u16> = connect_packet.into();
+    let connect: mqtt_ep::packet::Packet = connect_packet.into();
 
     // Test exclude filter behavior
     assert!(
-        exclude_filter.matches(&generic_publish),
+        exclude_filter.matches(&publish),
         "PUBLISH packet should match exclude filter (not in exclude list)"
     );
     assert!(
-        !exclude_filter.matches(&generic_connect),
+        !exclude_filter.matches(&connect),
         "CONNECT packet should not match exclude filter (in exclude list)"
     );
 }

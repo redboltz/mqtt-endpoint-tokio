@@ -57,7 +57,7 @@ fn init_tracing() {
     });
 }
 
-type ClientEndpoint = mqtt_ep::GenericEndpoint<mqtt_ep::role::Client, u16>;
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
 
 #[tokio::main]
 async fn main() {
@@ -68,10 +68,7 @@ async fn main() {
 
     let (hostname, port, topic, qos) = if args.len() != 5 {
         eprintln!("Usage: {} <hostname> <port> <topic> <qos>", args[0]);
-        eprintln!(
-            "Example: {} localhost 1883 \"test/topic\" 1 \"Hello, MQTT!\"",
-            args[0]
-        );
+        eprintln!("Example: {} localhost 1883 \"test/topic\" 1", args[0]);
         eprintln!();
         eprintln!("Using default values: 127.0.0.1 1883 t1 2");
         eprintln!();
@@ -95,18 +92,15 @@ async fn main() {
     println!("Topic: {topic}");
     println!("QoS: {qos}");
 
-    // Create socket address string
-    let addr = format!("{hostname}:{port}");
-
     // Create MQTT endpoint
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
-    // Connect to the broker and create transport
-    println!("Connecting to broker...");
-    let tcp_stream = match mqtt_ep::transport::connect_helper::connect_tcp(&addr, None).await {
+    // Connect to the broker with hostname resolution support
+    println!("Resolving hostname and connecting to broker...");
+    let tcp_stream = match tokio::net::TcpStream::connect(format!("{hostname}:{port}")).await {
         Ok(stream) => stream,
         Err(e) => {
-            eprintln!("Error: Failed to connect to broker: {e:?}");
+            eprintln!("Error: Failed to connect to broker (check hostname/IP and port): {e:?}");
             process::exit(1);
         }
     };
@@ -142,7 +136,7 @@ async fn main() {
     println!("Waiting for CONNACK...");
     match endpoint.recv().await {
         Ok(packet) => match packet {
-            mqtt_ep::packet::GenericPacket::V3_1_1Connack(connack) => {
+            mqtt_ep::packet::Packet::V3_1_1Connack(connack) => {
                 if connack.return_code() != mqtt_ep::result_code::ConnectReturnCode::Accepted {
                     eprintln!("Error: Connection refused: {:?}", connack.return_code());
                     process::exit(1);
@@ -203,7 +197,7 @@ async fn main() {
     println!("Waiting for SUBACK...");
     match endpoint.recv().await {
         Ok(packet) => match packet {
-            mqtt_ep::packet::GenericPacket::V3_1_1Suback(suback) => {
+            mqtt_ep::packet::Packet::V3_1_1Suback(suback) => {
                 println!("Subscription confirmed for topic: {topic}");
                 println!("Granted QoS levels: {:?}", suback.return_codes());
             }
@@ -230,7 +224,7 @@ async fn main() {
             Ok(packet) => {
                 // Handle different packet types
                 match packet {
-                    mqtt_ep::packet::GenericPacket::V3_1_1Publish(publish) => {
+                    mqtt_ep::packet::Packet::V3_1_1Publish(publish) => {
                         println!("Received message:");
                         println!("  Topic: {}", publish.topic_name());
                         println!("  QoS: {:?}", publish.qos());

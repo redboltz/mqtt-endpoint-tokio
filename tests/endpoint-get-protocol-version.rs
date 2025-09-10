@@ -31,7 +31,7 @@ type ServerEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Server>;
 async fn test_get_protocol_version_v3_1_1() {
     common::init_tracing();
     // Test that the get_stored_packets API compiles correctly
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V3_1_1);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     let result = endpoint.get_protocol_version().await.unwrap();
     assert_eq!(result, mqtt_ep::Version::V3_1_1);
@@ -41,7 +41,7 @@ async fn test_get_protocol_version_v3_1_1() {
 async fn test_get_protocol_version_v5_0() {
     common::init_tracing();
     // Test that the get_stored_packets API compiles correctly
-    let endpoint: ClientEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::V5_0);
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V5_0);
 
     let result = endpoint.get_protocol_version().await.unwrap();
     assert_eq!(result, mqtt_ep::Version::V5_0);
@@ -55,7 +55,7 @@ async fn test_get_protocol_version_undetermined() {
     use tokio::time::timeout;
 
     // Create a server endpoint with undetermined version
-    let endpoint: ServerEndpoint = mqtt_ep::GenericEndpoint::new(mqtt_ep::Version::Undetermined);
+    let endpoint = ServerEndpoint::new(mqtt_ep::Version::Undetermined);
 
     // Initially should be undetermined
     let result = endpoint.get_protocol_version().await.unwrap();

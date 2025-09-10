@@ -206,7 +206,18 @@ impl TransportOps for StubTransport {
                 .unwrap()
                 .push(TransportCall::Shutdown { timeout });
 
-            // Shutdown doesn't return anything, just record the call
+            // Handle DelayMs by processing all delays first
+            loop {
+                let response = self.get_next_response();
+                match response {
+                    TransportResponse::DelayMs(ms) => {
+                        tokio::time::sleep(Duration::from_millis(ms)).await;
+                        continue; // Get next response after delay
+                    }
+                    TransportResponse::Shutdown => return,
+                    _ => return, // Default case - shutdown completes
+                }
+            }
         })
     }
 }
