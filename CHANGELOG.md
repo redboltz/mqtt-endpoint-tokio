@@ -1,3 +1,9 @@
+# 0.4.2
+
+* Introduce context. #22
+   * async loop local variables are now the fields of context.
+   * The function calls are simplified.
+
 # 0.4.1
 
 * Add rust-version 1.86.0 to Cargo.toml. #21
