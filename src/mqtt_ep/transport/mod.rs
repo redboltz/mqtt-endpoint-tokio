@@ -32,6 +32,7 @@
 //! - **TLS**: TLS-encrypted TCP transport for secure connections
 //! - **WebSocket**: WebSocket transport for web-based connections
 //! - **WebSocket over TLS**: Secure WebSocket transport
+//! - **QUIC**: QUIC transport for modern, secure, and efficient connections
 //!
 //! # Custom Transport Implementation
 //!
@@ -40,10 +41,12 @@
 //! or other transport mechanisms not covered by the built-in implementations.
 
 pub mod connect_helper;
+mod quic;
 mod tcp;
 mod tls;
 mod websocket;
 
+pub use quic::QuicTransport;
 pub use tcp::TcpTransport;
 pub use tls::TlsTransport;
 pub use websocket::{WebSocketAdapter, WebSocketTransport};
@@ -62,6 +65,7 @@ pub enum TransportError {
     Io(std::io::Error),
     Tls(Box<dyn std::error::Error + Send + Sync>),
     WebSocket(Box<dyn std::error::Error + Send + Sync>),
+    Quic(Box<dyn std::error::Error + Send + Sync>),
     Timeout,
     Connect(String),
     NotConnected,
@@ -73,6 +77,7 @@ impl std::fmt::Display for TransportError {
             TransportError::Io(e) => write!(f, "IO error: {e}"),
             TransportError::Tls(e) => write!(f, "TLS error: {e}"),
             TransportError::WebSocket(e) => write!(f, "WebSocket error: {e}"),
+            TransportError::Quic(e) => write!(f, "QUIC error: {e}"),
             TransportError::Timeout => write!(f, "Operation timed out"),
             TransportError::Connect(msg) => write!(f, "Connection failed: {msg}"),
             TransportError::NotConnected => write!(f, "Transport not connected"),

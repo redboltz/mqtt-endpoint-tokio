@@ -75,28 +75,34 @@ async fn run_tcp_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> 
 fn load_tls_acceptor() -> TlsAcceptor {
     let cert_file = File::open("tests/certs/server.crt.pem").unwrap();
     let mut cert_reader = BufReader::new(cert_file);
-    let cert_chain = rustls_pemfile::certs(&mut cert_reader)
-        .unwrap()
-        .into_iter()
-        .map(rustls::Certificate)
-        .collect();
+    let cert_chain: Vec<rustls::pki_types::CertificateDer> =
+        rustls_pemfile::certs(&mut cert_reader)
+            .unwrap()
+            .into_iter()
+            .map(rustls::pki_types::CertificateDer::from)
+            .collect();
 
     let key_file = File::open("tests/certs/server.key.pem").unwrap();
     let mut key_reader = BufReader::new(key_file);
 
     // Try PKCS8 first, then PKCS1
-    let private_keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader).unwrap();
+    let private_keys: Vec<Vec<u8>> = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
+        .unwrap()
+        .into_iter()
+        .collect();
     let private_key = if private_keys.is_empty() {
         // Reset reader and try PKCS1
         key_reader = BufReader::new(File::open("tests/certs/server.key.pem").unwrap());
-        let rsa_keys = rustls_pemfile::rsa_private_keys(&mut key_reader).unwrap();
-        rustls::PrivateKey(rsa_keys[0].clone())
+        let rsa_keys: Vec<Vec<u8>> = rustls_pemfile::rsa_private_keys(&mut key_reader)
+            .unwrap()
+            .into_iter()
+            .collect();
+        rustls::pki_types::PrivateKeyDer::try_from(rsa_keys[0].clone()).unwrap()
     } else {
-        rustls::PrivateKey(private_keys[0].clone())
+        rustls::pki_types::PrivateKeyDer::try_from(private_keys[0].clone()).unwrap()
     };
 
     let config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(cert_chain, private_key)
         .unwrap();
@@ -252,17 +258,19 @@ async fn run_tls_ws_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) 
 fn load_client_tls_config() -> Arc<rustls::ClientConfig> {
     let ca_file = File::open("tests/certs/cacert.pem").unwrap();
     let mut ca_reader = BufReader::new(ca_file);
-    let ca_certs = rustls_pemfile::certs(&mut ca_reader).unwrap();
+    let ca_certs: Vec<rustls::pki_types::CertificateDer> = rustls_pemfile::certs(&mut ca_reader)
+        .unwrap()
+        .into_iter()
+        .map(rustls::pki_types::CertificateDer::from)
+        .collect();
 
     let mut root_store = rustls::RootCertStore::empty();
-    for cert_der in ca_certs {
-        let cert = rustls::Certificate(cert_der);
-        root_store.add(&cert).unwrap();
+    for cert in ca_certs {
+        root_store.add(cert).unwrap();
     }
 
     Arc::new(
         rustls::ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_store)
             .with_no_client_auth(),
     )
@@ -403,6 +411,17 @@ async fn test_connect_tcp_tls() {
     .await;
     assert!(result.is_err());
 
+    // Test with None tls_config (uses default configuration with system root store)
+    // This should fail with self-signed certificate since it's not in system root store
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls(
+        &addr.to_string(),
+        "localhost",
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err()); // Expected to fail with certificate verification error
+
     // Test timeout with unreachable address
     let result = mqtt_ep::transport::connect_helper::connect_tcp_tls(
         "192.0.2.1:12345", // TEST-NET-1 address (unreachable)
@@ -454,6 +473,16 @@ async fn test_connect_tcp_ws() {
     let result =
         mqtt_ep::transport::connect_helper::connect_tcp_ws("invalid_address", "/mqtt", None, None)
             .await;
+    assert!(result.is_err());
+
+    // Test connection with invalid port number
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_ws(
+        "127.0.0.1:invalid_port",
+        "/mqtt",
+        None,
+        None,
+    )
+    .await;
     assert!(result.is_err());
 
     // Test timeout with unreachable address
@@ -515,9 +544,72 @@ async fn test_connect_tcp_tls_ws() {
     .await;
     assert!(result.is_ok());
 
+    // Test actual connect_tcp_tls_ws function without timeout (covers lines 307-343, None branch)
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
+        &addr.to_string(),
+        "localhost",
+        "/mqtt",
+        Some(tls_config.clone()),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // Test actual connect_tcp_tls_ws function with timeout (covers lines 330-337, Some branch)
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
+        &addr.to_string(),
+        "localhost",
+        "/mqtt",
+        Some(tls_config.clone()),
+        None,
+        Some(Duration::from_secs(10)),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // Test actual connect_tcp_tls_ws function with custom headers (covers lines 319-323)
+    let mut headers = HashMap::new();
+    headers.insert("X-Test-Header".to_string(), "test-value".to_string());
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
+        &addr.to_string(),
+        "localhost",
+        "/mqtt",
+        Some(tls_config.clone()),
+        Some(headers),
+        Some(Duration::from_secs(10)),
+    )
+    .await;
+    assert!(result.is_ok());
+
+    // Test with None tls_config (uses default configuration with system root store)
+    // This should fail with self-signed certificate since it's not in system root store
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
+        &addr.to_string(),
+        "localhost",
+        "/mqtt",
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err()); // Expected to fail with certificate verification error
+
     // Test connection to invalid address
     let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
         "invalid_address",
+        "localhost",
+        "/mqtt",
+        Some(tls_config.clone()),
+        None,
+        None,
+    )
+    .await;
+    assert!(result.is_err());
+
+    // Test connection with invalid port number
+    let result = mqtt_ep::transport::connect_helper::connect_tcp_tls_ws(
+        "127.0.0.1:invalid_port",
         "localhost",
         "/mqtt",
         Some(tls_config.clone()),
@@ -541,4 +633,132 @@ async fn test_connect_tcp_tls_ws() {
     assert!(result.is_err());
 
     let _ = shutdown_tx.send(());
+}
+
+#[tokio::test]
+async fn test_connect_quic() {
+    common::init_tracing();
+
+    // Test with invalid hostname (covers hostname resolution path 392-395)
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        "invalid_hostname_test:12345",
+        Some("localhost"),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert!(result.is_err()); // Should fail with hostname resolution error
+
+    // Test with already parsed SocketAddr (covers direct parsing path 387-389)
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        "127.0.0.1:12345",
+        Some("localhost"),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert!(result.is_err()); // Should fail with connection error (no server listening)
+
+    // Test without domain - insecure configuration (covers 436-515)
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        "127.0.0.1:12345",
+        None,
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert!(result.is_err()); // Should fail with connection error (no server listening)
+
+    // Test hostname resolution with no addresses found
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        "nonexistent.invalid:12345",
+        Some("localhost"),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert!(result.is_err()); // Should fail with hostname resolution error
+
+    // Test hostname that resolves to IPv6 to trigger IPv4 preference logic (covers line 398)
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        "localhost:12345",
+        Some("localhost"),
+        Some(Duration::from_millis(100)),
+    )
+    .await;
+    assert!(result.is_err()); // Should fail with connection error but covers IPv4 preference
+
+    // Test without timeout to cover stream opening None branch (covers lines 544-547)
+    // Use a timeout wrapper to prevent hanging
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        mqtt_ep::transport::connect_helper::connect_quic(
+            "127.0.0.1:12345",
+            None, // This triggers insecure config and NoVerification methods (covers 443-472)
+            None, // No timeout covers the None branch for stream opening
+        ),
+    )
+    .await;
+    assert!(result.is_err() || result.unwrap().is_err()); // Should fail with connection error or timeout
+}
+
+#[tokio::test]
+#[ignore = "Requires QUIC server setup for certificate verification testing"]
+async fn test_connect_quic_with_server() {
+    common::init_tracing();
+
+    use quinn::{Endpoint, ServerConfig};
+    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use std::sync::Arc;
+
+    // Generate self-signed certificate for testing
+    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let cert_der = CertificateDer::from(cert.serialize_der().unwrap());
+    let private_key = PrivateKeyDer::try_from(cert.serialize_private_key_der()).unwrap();
+
+    // Server config
+    let rustls_server_config = Arc::new(
+        rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert_der.clone()], private_key)
+            .unwrap(),
+    );
+
+    let server_config = ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(rustls_server_config).unwrap(),
+    ));
+
+    // Create QUIC server endpoint
+    let server_endpoint = Endpoint::server(server_config, "127.0.0.1:0".parse().unwrap()).unwrap();
+    let server_addr = server_endpoint.local_addr().unwrap();
+
+    // Start server task
+    let server_handle = tokio::spawn(async move {
+        if let Some(incoming_conn) = server_endpoint.accept().await {
+            let _connection = incoming_conn.await;
+        }
+    });
+
+    // Give server time to start
+    tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+
+    // Test with insecure configuration (None domain) - this will trigger NoVerification methods
+    let result = mqtt_ep::transport::connect_helper::connect_quic(
+        &server_addr.to_string(),
+        None, // Triggers insecure config and NoVerification trait methods (443-472)
+        Some(Duration::from_millis(500)),
+    )
+    .await;
+
+    // This should succeed with insecure config, covering the NoVerification implementation
+    if result.is_ok() {
+        // Success means we covered the NoVerification methods
+        let (_send_stream, _recv_stream) = result.unwrap();
+    }
+
+    // Test with timeout None to cover stream opening None branch
+    let _result = mqtt_ep::transport::connect_helper::connect_quic(
+        &server_addr.to_string(),
+        None,
+        None, // No timeout - covers lines 544-547
+    )
+    .await;
+
+    server_handle.abort();
 }

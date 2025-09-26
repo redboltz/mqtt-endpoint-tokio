@@ -159,35 +159,37 @@ async fn load_tls_config() -> Result<(TlsConnector, TlsAcceptor), Box<dyn std::e
     // Load certificates from tests/certs directory
     let cert_file = File::open("tests/certs/server.crt")?;
     let mut cert_reader = BufReader::new(cert_file);
-    let certs: Vec<rustls::Certificate> = rustls_pemfile::certs(&mut cert_reader)?
+    let certs: Vec<rustls::pki_types::CertificateDer> = rustls_pemfile::certs(&mut cert_reader)?
         .into_iter()
-        .map(rustls::Certificate)
+        .map(rustls::pki_types::CertificateDer::from)
         .collect();
 
     let key_file = File::open("tests/certs/server.key")?;
     let mut key_reader = BufReader::new(key_file);
-    let mut keys = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?;
+    let mut keys: Vec<Vec<u8>> = rustls_pemfile::pkcs8_private_keys(&mut key_reader)?
+        .into_iter()
+        .collect();
     if keys.is_empty() {
         let key_file = File::open("tests/certs/server.key")?;
         let mut key_reader = BufReader::new(key_file);
-        keys = rustls_pemfile::rsa_private_keys(&mut key_reader)?;
+        keys = rustls_pemfile::rsa_private_keys(&mut key_reader)?
+            .into_iter()
+            .collect();
     }
-    let key = rustls::PrivateKey(keys.into_iter().next().unwrap());
+    let key = rustls::pki_types::PrivateKeyDer::try_from(keys.into_iter().next().unwrap()).unwrap();
 
     // Server config
     let server_config = rustls::ServerConfig::builder()
-        .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(certs.clone(), key)?;
 
     // Client config (accepting self-signed certs for testing)
     let mut root_cert_store = rustls::RootCertStore::empty();
     for cert in certs {
-        root_cert_store.add(&cert)?;
+        root_cert_store.add(cert)?;
     }
 
     let client_config = rustls::ClientConfig::builder()
-        .with_safe_defaults()
         .with_root_certificates(root_cert_store)
         .with_no_client_auth();
 
@@ -204,22 +206,21 @@ async fn create_test_tls_config() -> (TlsConnector, TlsAcceptor) {
     } else {
         // Generate self-signed certificate for testing
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-        let cert_der = rustls::Certificate(cert.serialize_der().unwrap());
-        let private_key = rustls::PrivateKey(cert.serialize_private_key_der());
+        let cert_der = rustls::pki_types::CertificateDer::from(cert.serialize_der().unwrap());
+        let private_key =
+            rustls::pki_types::PrivateKeyDer::try_from(cert.serialize_private_key_der()).unwrap();
 
         // Server config
         let server_config = rustls::ServerConfig::builder()
-            .with_safe_defaults()
             .with_no_client_auth()
             .with_single_cert(vec![cert_der.clone()], private_key)
             .unwrap();
 
         // Client config (accepting self-signed certs)
         let mut root_cert_store = rustls::RootCertStore::empty();
-        root_cert_store.add(&cert_der).unwrap();
+        root_cert_store.add(cert_der).unwrap();
 
         let client_config = rustls::ClientConfig::builder()
-            .with_safe_defaults()
             .with_root_certificates(root_cert_store)
             .with_no_client_auth();
 
@@ -276,7 +277,7 @@ async fn tls_client_server_scenario() {
 
     // Client task
     let tcp_stream = TcpStream::connect(server_addr).await.unwrap();
-    let domain = rustls::ServerName::try_from("localhost").unwrap();
+    let domain = rustls::pki_types::ServerName::try_from("localhost".to_owned()).unwrap();
     let tls_stream = tls_connector.connect(domain, tcp_stream).await.unwrap();
     let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
 
@@ -335,7 +336,7 @@ async fn test_tls_transport_from_stream() {
     });
 
     let tcp_stream = TcpStream::connect(server_addr).await.unwrap();
-    let domain = rustls::ServerName::try_from("localhost").unwrap();
+    let domain = rustls::pki_types::ServerName::try_from("localhost".to_owned()).unwrap();
     let tls_stream = tls_connector.connect(domain, tcp_stream).await.unwrap();
     let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
     assert!(format!("{:?}", transport).contains("TlsTransport"));
@@ -365,7 +366,7 @@ async fn test_tls_transport_stream_access() {
     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
     let tcp_stream = TcpStream::connect(server_addr).await.unwrap();
-    let domain = rustls::ServerName::try_from("localhost").unwrap();
+    let domain = rustls::pki_types::ServerName::try_from("localhost".to_owned()).unwrap();
     let tls_stream = tls_connector.connect(domain, tcp_stream).await.unwrap();
     let mut transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
 
@@ -543,7 +544,7 @@ async fn websocket_tls_client_server_scenario() {
 
     // Client task
     let tcp_stream = TcpStream::connect(server_addr).await.unwrap();
-    let domain = rustls::ServerName::try_from("localhost").unwrap();
+    let domain = rustls::pki_types::ServerName::try_from("localhost".to_owned()).unwrap();
     let tls_stream = tls_connector.connect(domain, tcp_stream).await.unwrap();
     let url = format!("wss://127.0.0.1:{}", server_addr.port());
     let (ws_stream, _) = client_async(&url, tls_stream).await.unwrap();
