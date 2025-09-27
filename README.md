@@ -38,7 +38,7 @@ Add this to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-mqtt-endpoint-tokio = "0.4"
+mqtt-endpoint-tokio = "0.5"
 ```
 
 ### Basic Client Example
