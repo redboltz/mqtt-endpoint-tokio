@@ -1,0 +1,298 @@
+// MIT License
+//
+// Copyright (c) 2025 Takatoshi Kondo
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+// Simple MQTT Subscriber Example over QUIC
+//
+// This is a simplified example that demonstrates basic MQTT endpoint usage over QUIC transport.
+//
+// Usage:
+// ```bash
+// cargo run --example simple_subscriber_quic -- <hostname> <port> <topic> <qos> [cacert_pem_file]
+// ```
+//
+// Example:
+// ```bash
+// # Insecure connection (development only)
+// cargo run --example simple_subscriber_quic -- localhost 4433 "test/topic" 1
+//
+// # Secure connection with certificate file
+// cargo run --example simple_subscriber_quic -- localhost 4433 "test/topic" 1 /path/to/ca.pem
+// ```
+use std::env;
+use std::process;
+use tokio::time::Duration;
+
+use mqtt_endpoint_tokio::mqtt_ep;
+
+fn init_tracing() {
+    use std::sync::Once;
+    static INIT: Once = Once::new();
+
+    INIT.call_once(|| {
+        let filter = if let Ok(rust_log) = std::env::var("RUST_LOG") {
+            tracing_subscriber::EnvFilter::new(rust_log)
+        } else {
+            let level = std::env::var("MQTT_LOG_LEVEL").unwrap_or_else(|_| "warn".to_string());
+            tracing_subscriber::EnvFilter::new(format!("mqtt_endpoint_tokio={level}"))
+        };
+
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .init();
+    });
+}
+
+type ClientEndpoint = mqtt_ep::Endpoint<mqtt_ep::role::Client>;
+
+#[tokio::main]
+async fn main() {
+    init_tracing();
+
+    // Initialize crypto provider for rustls
+    let _ = rustls::crypto::ring::default_provider().install_default();
+
+    // Parse command line arguments
+    let args: Vec<String> = env::args().collect();
+
+    let (hostname, port, topic, qos, cacert_pem_file) = if args.len() < 5 || args.len() > 6 {
+        eprintln!(
+            "Usage: {} <hostname> <port> <topic> <qos> [cacert_pem_file]",
+            args[0]
+        );
+        eprintln!("Example: {} localhost 4433 \"test/topic\" 1", args[0]);
+        eprintln!(
+            "Example: {} localhost 4433 \"test/topic\" 1 /path/to/ca.pem",
+            args[0]
+        );
+        eprintln!();
+        eprintln!("Using default values: 127.0.0.1 4433 t1 1");
+        eprintln!();
+        (
+            "127.0.0.1".to_string(),
+            4433u16,
+            "t1".to_string(),
+            1u8,
+            None,
+        )
+    } else {
+        let hostname = args[1].clone();
+        let port: u16 = args[2].parse().unwrap_or_else(|_| {
+            eprintln!("Error: Invalid port number '{}'", args[2]);
+            process::exit(1);
+        });
+        let topic = args[3].clone();
+        let qos: u8 = args[4].parse().unwrap_or_else(|_| {
+            eprintln!("Error: Invalid QoS level '{}'. Must be 0, 1, or 2", args[4]);
+            process::exit(1);
+        });
+        let cacert_pem_file = args.get(5).cloned();
+        (hostname, port, topic, qos, cacert_pem_file)
+    };
+
+    println!("Simple MQTT Subscriber over QUIC");
+    println!("Broker: {hostname}:{port}");
+    println!("Topic: {topic}");
+    println!("QoS: {qos}");
+    if let Some(ref cert_file) = cacert_pem_file {
+        println!("CA Certificate: {cert_file}");
+    } else {
+        println!("CA Certificate: None (insecure connection)");
+    }
+
+    // Create MQTT endpoint
+    let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
+
+    // Connect to the broker using QUIC
+    println!("Establishing QUIC connection to broker...");
+
+    // Determine if we should use secure connection
+    let domain = if cacert_pem_file.is_some() {
+        Some(hostname.as_str())
+    } else {
+        None
+    };
+
+    let (send_stream, recv_stream) = match mqtt_ep::transport::connect_helper::connect_quic(
+        &format!("{hostname}:{port}"),
+        domain,
+        Some(Duration::from_secs(30)),
+    )
+    .await
+    {
+        Ok(streams) => streams,
+        Err(e) => {
+            eprintln!("Error: Failed to establish QUIC connection to broker: {e:?}");
+            process::exit(1);
+        }
+    };
+
+    let transport = mqtt_ep::transport::QuicTransport::from_streams(send_stream, recv_stream);
+
+    // Attach the connected transport to the endpoint
+    if let Err(e) = endpoint
+        .attach(transport, mqtt_endpoint_tokio::mqtt_ep::Mode::Client)
+        .await
+    {
+        eprintln!("Error: Failed to attach transport to endpoint: {e:?}");
+        process::exit(1);
+    }
+    println!("QUIC transport connected and attached successfully!");
+
+    // Send MQTT CONNECT packet
+    println!("Sending CONNECT packet...");
+    let connect_packet = mqtt_ep::packet::v3_1_1::Connect::builder()
+        .client_id("rust_subscriber_quic")
+        .unwrap()
+        .keep_alive(60)
+        .clean_session(true)
+        .build()
+        .unwrap();
+
+    if let Err(e) = endpoint.send(connect_packet).await {
+        eprintln!("Error: Failed to send CONNECT packet: {e:?}");
+        process::exit(1);
+    }
+
+    // Wait for CONNACK
+    println!("Waiting for CONNACK...");
+    match endpoint.recv().await {
+        Ok(packet) => match packet {
+            mqtt_ep::packet::Packet::V3_1_1Connack(connack) => {
+                if connack.return_code() != mqtt_ep::result_code::ConnectReturnCode::Accepted {
+                    eprintln!("Error: Connection refused: {:?}", connack.return_code());
+                    process::exit(1);
+                }
+                println!("MQTT connection accepted by broker");
+            }
+            _ => {
+                eprintln!(
+                    "Error: Expected CONNACK, received: {:?}",
+                    packet.packet_type()
+                );
+                process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: Failed to receive CONNACK: {e:?}");
+            process::exit(1);
+        }
+    }
+
+    // Acquire packet ID for SUBSCRIBE
+    println!("Acquiring packet ID for SUBSCRIBE...");
+    let packet_id = match endpoint.acquire_packet_id().await {
+        Ok(id) => id,
+        Err(e) => {
+            eprintln!("Error: Failed to acquire packet ID: {e:?}");
+            process::exit(1);
+        }
+    };
+
+    // Convert QoS
+    let qos_level = mqtt_ep::packet::Qos::try_from(qos)
+        .expect("Error: Invalid QoS level '{qos}'. Must be 0, 1, or 2");
+    // Create SubEntry for the subscription
+    let sub_opts = mqtt_ep::packet::SubOpts::new().set_qos(qos_level);
+    let sub_entry = match mqtt_ep::packet::SubEntry::new(&topic, sub_opts) {
+        Ok(entry) => entry,
+        Err(e) => {
+            eprintln!("Error: Failed to create subscription entry: {e:?}");
+            process::exit(1);
+        }
+    };
+
+    // Create SUBSCRIBE packet
+    println!("Sending SUBSCRIBE packet for topic '{topic}'...");
+    let subscribe_packet = mqtt_ep::packet::v3_1_1::Subscribe::builder()
+        .packet_id(packet_id)
+        .entries(vec![sub_entry])
+        .build()
+        .unwrap();
+
+    if let Err(e) = endpoint.send(subscribe_packet).await {
+        eprintln!("Error: Failed to send SUBSCRIBE packet: {e:?}");
+        process::exit(1);
+    }
+
+    // Wait for SUBACK
+    println!("Waiting for SUBACK...");
+    match endpoint.recv().await {
+        Ok(packet) => match packet {
+            mqtt_ep::packet::Packet::V3_1_1Suback(suback) => {
+                println!("Subscription confirmed for topic: {topic}");
+                println!("Granted QoS levels: {:?}", suback.return_codes());
+            }
+            _ => {
+                eprintln!(
+                    "Error: Expected SUBACK, received: {:?}",
+                    packet.packet_type()
+                );
+                process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: Failed to receive SUBACK: {e:?}");
+            process::exit(1);
+        }
+    }
+
+    println!("Successfully subscribed to topic '{topic}' with QoS {qos_level:?}");
+    println!("Listening for messages (Press Ctrl+C to exit)...");
+
+    // Simple receive loop to demonstrate the endpoint API
+    loop {
+        match endpoint.recv().await {
+            Ok(packet) => {
+                // Handle different packet types
+                match packet {
+                    mqtt_ep::packet::Packet::V3_1_1Publish(publish) => {
+                        println!("Received message:");
+                        println!("  Topic: {}", publish.topic_name());
+                        println!("  QoS: {:?}", publish.qos());
+                        println!("  Retain: {}", publish.retain());
+                        println!(
+                            "  Payload: {}",
+                            String::from_utf8_lossy(publish.payload().as_slice())
+                        );
+                        println!("  ---");
+                    }
+                    _ => {
+                        // Other packet types
+                        println!("Received packet: {:?}", packet.packet_type());
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to receive packet: {e:?}");
+                break;
+            }
+        }
+    }
+
+    // Close connection
+    if let Err(e) = endpoint.close().await {
+        eprintln!("Warning: Failed to close connection properly: {e:?}");
+    }
+
+    println!("Subscriber stopped.");
+}

@@ -1,3 +1,9 @@
+# 0.4.3
+
+* Add QUIC transport support. #23
+* Refine connection_helper. #23
+* Refine examples. #23
+
 # 0.4.2
 
 * Introduce context. #22

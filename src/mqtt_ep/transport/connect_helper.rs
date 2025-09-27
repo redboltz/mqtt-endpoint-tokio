@@ -26,6 +26,7 @@
 /// that can be used with transport `from_stream` methods. It handles the
 /// multi-step handshake processes for TLS and WebSocket connections.
 use super::TransportError;
+use quinn::{RecvStream, SendStream};
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -71,20 +72,12 @@ pub async fn connect_tcp(
     addr: &str,
     timeout: Option<Duration>,
 ) -> Result<TcpStream, TransportError> {
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .map_err(|e| TransportError::Connect(format!("Invalid address: {e}")))?;
-
     match timeout {
-        Some(timeout_duration) => {
-            tokio::time::timeout(timeout_duration, TcpStream::connect(socket_addr))
-                .await
-                .map_err(|_| TransportError::Timeout)?
-                .map_err(TransportError::Io)
-        }
-        None => TcpStream::connect(socket_addr)
+        Some(timeout_duration) => tokio::time::timeout(timeout_duration, TcpStream::connect(addr))
             .await
+            .map_err(|_| TransportError::Timeout)?
             .map_err(TransportError::Io),
+        None => TcpStream::connect(addr).await.map_err(TransportError::Io),
     }
 }
 
@@ -135,12 +128,12 @@ pub async fn connect_tcp_tls(
     let tls_config = tls_config.unwrap_or_else(|| {
         use rustls::RootCertStore;
         let mut root_store = RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs().unwrap_or_default() {
-            let _ = root_store.add(&rustls::Certificate(cert.0));
+        let cert_result = rustls_native_certs::load_native_certs();
+        for cert in cert_result.certs {
+            let _ = root_store.add(cert);
         }
         Arc::new(
             rustls::ClientConfig::builder()
-                .with_safe_defaults()
                 .with_root_certificates(root_store)
                 .with_no_client_auth(),
         )
@@ -148,8 +141,8 @@ pub async fn connect_tcp_tls(
 
     // 3. Perform TLS handshake
     let connector = TlsConnector::from(tls_config);
-    let server_name =
-        rustls::ServerName::try_from(domain).map_err(|e| TransportError::Tls(Box::new(e)))?;
+    let server_name = rustls::pki_types::ServerName::try_from(domain.to_owned())
+        .map_err(|e| TransportError::Tls(Box::new(e)))?;
 
     match timeout {
         Some(timeout_duration) => {
@@ -195,12 +188,22 @@ pub async fn connect_tcp_ws(
     timeout: Option<Duration>,
 ) -> Result<WebSocketStream<MaybeTlsStream<TcpStream>>, TransportError> {
     // Parse address to get host and port
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .map_err(|e| TransportError::Connect(format!("Invalid address: {e}")))?;
-
-    let host = socket_addr.ip().to_string();
-    let port = socket_addr.port();
+    let (host, port) = if let Ok(parsed_addr) = addr.parse::<SocketAddr>() {
+        (parsed_addr.ip().to_string(), parsed_addr.port())
+    } else {
+        // Try to extract host and port from "hostname:port" format
+        let parts: Vec<&str> = addr.split(':').collect();
+        if parts.len() != 2 {
+            return Err(TransportError::Connect(
+                "Invalid address format".to_string(),
+            ));
+        }
+        let host = parts[0].to_string();
+        let port: u16 = parts[1]
+            .parse()
+            .map_err(|_| TransportError::Connect("Invalid port number".to_string()))?;
+        (host, port)
+    };
     let url = format!("ws://{host}:{port}{path}");
 
     // Create request with required WebSocket headers and optional custom headers
@@ -285,12 +288,16 @@ pub async fn connect_tcp_tls_ws(
     headers: Option<HashMap<String, String>>,
     timeout: Option<Duration>,
 ) -> Result<WebSocketStream<TlsStream<TcpStream>>, TransportError> {
-    // Parse address to get host and port for connection
-    let socket_addr: SocketAddr = addr
-        .parse()
-        .map_err(|e| TransportError::Connect(format!("Invalid address: {e}")))?;
-
-    let port = socket_addr.port();
+    // Parse address to get port for URL construction
+    let port = if let Ok(parsed_addr) = addr.parse::<SocketAddr>() {
+        parsed_addr.port()
+    } else {
+        // Try to extract port from "hostname:port" format
+        addr.split(':')
+            .nth(1)
+            .and_then(|port_str| port_str.parse().ok())
+            .ok_or_else(|| TransportError::Connect("Invalid address format".to_string()))?
+    };
     let url = format!("wss://{domain}:{port}{path}");
 
     // 1. Establish TLS connection
@@ -334,4 +341,211 @@ pub async fn connect_tcp_tls_ws(
     };
 
     Ok(ws_stream)
+}
+
+/// Establishes a QUIC connection and opens a bidirectional stream.
+///
+/// This function creates a QUIC connection and opens a bidirectional stream
+/// that can be used with `QuicTransport::from_streams`. It handles the full
+/// QUIC handshake process.
+///
+/// # Parameters
+///
+/// * `addr` - The socket address to connect to (e.g., "127.0.0.1:4433")
+/// * `domain` - The server name for certificate verification (use None for insecure connection)
+/// * `timeout` - Optional timeout for the connection process (None for no timeout)
+///
+/// # Returns
+///
+/// Returns a tuple of `(SendStream, RecvStream)` or a `TransportError` if connection fails.
+///
+/// # Examples
+///
+/// ```rust
+/// use mqtt_endpoint_tokio::mqtt_ep::transport::{connect_helper, QuicTransport};
+/// use tokio::time::Duration;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Insecure connection (development only)
+/// let (send_stream, recv_stream) = connect_helper::connect_quic("127.0.0.1:4433", None, None).await?;
+/// let transport = QuicTransport::from_streams(send_stream, recv_stream);
+///
+/// // Secure connection with certificate verification
+/// let (send_stream, recv_stream) = connect_helper::connect_quic("broker.example.com:4433", Some("broker.example.com"), Some(Duration::from_secs(30))).await?;
+/// let transport = QuicTransport::from_streams(send_stream, recv_stream);
+/// # Ok(())
+/// # }
+/// ```
+pub async fn connect_quic(
+    addr: &str,
+    domain: Option<&str>,
+    timeout: Option<Duration>,
+) -> Result<(SendStream, RecvStream), TransportError> {
+    use quinn::{ClientConfig, Endpoint};
+
+    // Parse the address with hostname resolution support
+    let socket_addr: SocketAddr = if let Ok(parsed_addr) = addr.parse() {
+        // Already a valid SocketAddr (e.g., "127.0.0.1:14567")
+        parsed_addr
+    } else {
+        // Try to resolve hostname (e.g., "localhost:14567")
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host(addr)
+            .await
+            .map_err(|e| TransportError::Connect(format!("Failed to resolve hostname: {e}")))?
+            .collect();
+
+        // Prefer IPv4 address over IPv6
+        addrs
+            .iter()
+            .find(|addr| addr.is_ipv4())
+            .or_else(|| addrs.first())
+            .copied()
+            .ok_or_else(|| TransportError::Connect("No addresses found for hostname".to_string()))?
+    };
+
+    // Create QUIC client configuration
+    let client_config = if let Some(_domain_name) = domain {
+        // Secure configuration with certificate verification
+        let mut root_store = rustls::RootCertStore::empty();
+        let cert_result = rustls_native_certs::load_native_certs();
+        for cert in cert_result.certs {
+            let _ = root_store.add(cert);
+        }
+
+        let rustls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+        // Note: ALPN can be enabled if broker requires it
+        // rustls_config.alpn_protocols = vec![b"mqtt".to_vec()];
+        let rustls_config = Arc::new(rustls_config);
+
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
+                .map_err(|e| TransportError::Quic(Box::new(e)))?,
+        ));
+
+        // Configure transport parameters for longer connections
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(30)));
+        transport_config.max_idle_timeout(Some(
+            std::time::Duration::from_secs(300).try_into().unwrap(),
+        ));
+        client_config.transport_config(Arc::new(transport_config));
+
+        client_config
+    } else {
+        // Insecure configuration (development only)
+        // Create a custom verifier that accepts all certificates
+        #[derive(Debug)]
+        struct NoVerification;
+
+        impl rustls::client::danger::ServerCertVerifier for NoVerification {
+            fn verify_server_cert(
+                &self,
+                _end_entity: &rustls::pki_types::CertificateDer<'_>,
+                _intermediates: &[rustls::pki_types::CertificateDer<'_>],
+                _server_name: &rustls::pki_types::ServerName<'_>,
+                _ocsp_response: &[u8],
+                _now: rustls::pki_types::UnixTime,
+            ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+                Ok(rustls::client::danger::ServerCertVerified::assertion())
+            }
+
+            fn verify_tls12_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::pki_types::CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+
+            fn verify_tls13_signature(
+                &self,
+                _message: &[u8],
+                _cert: &rustls::pki_types::CertificateDer<'_>,
+                _dss: &rustls::DigitallySignedStruct,
+            ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error>
+            {
+                Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+            }
+
+            fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+                vec![
+                    rustls::SignatureScheme::RSA_PKCS1_SHA1,
+                    rustls::SignatureScheme::ECDSA_SHA1_Legacy,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA256,
+                    rustls::SignatureScheme::ECDSA_NISTP256_SHA256,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA384,
+                    rustls::SignatureScheme::ECDSA_NISTP384_SHA384,
+                    rustls::SignatureScheme::RSA_PKCS1_SHA512,
+                    rustls::SignatureScheme::ECDSA_NISTP521_SHA512,
+                    rustls::SignatureScheme::RSA_PSS_SHA256,
+                    rustls::SignatureScheme::RSA_PSS_SHA384,
+                    rustls::SignatureScheme::RSA_PSS_SHA512,
+                    rustls::SignatureScheme::ED25519,
+                    rustls::SignatureScheme::ED448,
+                ]
+            }
+        }
+
+        let rustls_config = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(NoVerification))
+            .with_no_client_auth();
+        // Note: ALPN can be enabled if broker requires it
+        // rustls_config.alpn_protocols = vec![b"mqtt".to_vec()];
+        let rustls_config = Arc::new(rustls_config);
+
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(rustls_config)
+                .map_err(|e| TransportError::Quic(Box::new(e)))?,
+        ));
+
+        // Configure transport parameters for longer connections
+        let mut transport_config = quinn::TransportConfig::default();
+        transport_config.keep_alive_interval(Some(std::time::Duration::from_secs(30)));
+        transport_config.max_idle_timeout(Some(
+            std::time::Duration::from_secs(300).try_into().unwrap(),
+        ));
+        client_config.transport_config(Arc::new(transport_config));
+
+        client_config
+    };
+
+    // Create QUIC endpoint
+    let mut endpoint = Endpoint::client("0.0.0.0:0".parse().unwrap())
+        .map_err(|e| TransportError::Quic(Box::new(e)))?;
+    endpoint.set_default_client_config(client_config);
+
+    // Establish connection
+    let server_name = domain.unwrap_or("localhost");
+    let connecting = endpoint
+        .connect(socket_addr, server_name)
+        .map_err(|e| TransportError::Quic(Box::new(e)))?;
+
+    let connection = match timeout {
+        Some(timeout_duration) => tokio::time::timeout(timeout_duration, connecting)
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|e| TransportError::Quic(Box::new(e)))?,
+        None => connecting
+            .await
+            .map_err(|e| TransportError::Quic(Box::new(e)))?,
+    };
+
+    // Open bidirectional stream
+    let (send_stream, recv_stream) = match timeout {
+        Some(timeout_duration) => tokio::time::timeout(timeout_duration, connection.open_bi())
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(|e| TransportError::Quic(Box::new(e)))?,
+        None => connection
+            .open_bi()
+            .await
+            .map_err(|e| TransportError::Quic(Box::new(e)))?,
+    };
+
+    Ok((send_stream, recv_stream))
 }

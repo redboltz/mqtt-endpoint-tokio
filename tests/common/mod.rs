@@ -24,6 +24,7 @@
 use std::sync::Once;
 
 static INIT: Once = Once::new();
+static CRYPTO_INIT: Once = Once::new();
 
 /// Automatic tracing initialization for ALL tests
 ///
@@ -53,6 +54,16 @@ fn auto_init_tracing() {
     });
 }
 
+/// Initialize rustls crypto provider once for all tests
+fn init_crypto_provider() {
+    CRYPTO_INIT.call_once(|| {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install rustls crypto provider");
+    });
+}
+
 pub fn init_tracing() {
+    init_crypto_provider();
     auto_init_tracing();
 }
