@@ -1,4 +1,11 @@
-# 0.4.3
+# 0.5.0
+
+## Breaking changes
+
+* Update TLS connection function. #23
+   * Due to results and tokio-results updating.
+
+## Other updates
 
 * Add QUIC transport support. #23
 * Refine connection_helper. #23
