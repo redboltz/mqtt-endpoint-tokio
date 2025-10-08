@@ -1,3 +1,9 @@
+# 0.5.1
+
+* Add re-export mqtt-protocol-core types. #25
+   * MqttBinary, MqttString, PayloadFormat, RetainHandling, VariableByteInteger are in mqtt_ep::packet mod.
+   * ArcPayload, HashMap, HashSet, IntoPayload are in mqtt_ep::common mod.
+
 # 0.5.0
 
 ## Breaking changes
