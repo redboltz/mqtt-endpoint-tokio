@@ -43,6 +43,11 @@ pub mod packet {
         pub use mqtt_protocol_core::mqtt::packet::v3_1_1::*;
     }
 
+    // Data types used in public APIs
+    pub use mqtt_protocol_core::mqtt::packet::{
+        MqttBinary, MqttString, PayloadFormat, RetainHandling, VariableByteInteger,
+    };
+
     // Properties
     pub use mqtt_protocol_core::mqtt::packet::{
         AssignedClientIdentifier, AuthenticationData, AuthenticationMethod, ContentType,
@@ -57,7 +62,7 @@ pub mod packet {
 }
 
 pub mod common {
-    pub use mqtt_protocol_core::mqtt::common::{HashMap, HashSet};
+    pub use mqtt_protocol_core::mqtt::common::{ArcPayload, HashMap, HashSet, IntoPayload};
 }
 
 // Role module
