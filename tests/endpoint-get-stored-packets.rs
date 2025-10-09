@@ -126,7 +126,7 @@ async fn test_get_stored_packets_after_close() {
 #[tokio::test]
 async fn test_restore_and_get_stored_packets_roundtrip() {
     common::init_tracing();
-    // Test the roundtrip: restore packets via connection options -> get stored packets
+    // Test the roundtrip: restore packets after connection -> get stored packets
     let endpoint = ClientEndpoint::new(mqtt_ep::Version::V3_1_1);
 
     // Initially should have no stored packets
@@ -142,12 +142,12 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
         "Should have no stored packets initially"
     );
 
-    // Create connection options with packets to restore (empty vector for this test)
+    // Create packets to restore (empty vector for this test)
     let packets_to_restore: Vec<mqtt_ep::packet::StorePacket> = Vec::new();
+    let qos2_pids_to_restore = mqtt_ep::common::HashSet::default();
 
     // Create connection options using builder with all required fields
     let connection_options = mqtt_ep::connection_option::ConnectionOption::builder()
-        .restore_packets(packets_to_restore)
         .pingreq_send_interval_ms(0u64)
         .auto_pub_response(true)
         .auto_ping_response(true)
@@ -157,7 +157,6 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
         .connection_establish_timeout_ms(0u64)
         .shutdown_timeout_ms(5000u64)
         .recv_buffer_size(4096usize)
-        .restore_qos2_publish_handled(mqtt_ep::common::HashSet::default())
         .queuing_receive_maximum(false)
         .build()
         .unwrap();
@@ -165,12 +164,19 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
     // Create a stub transport for testing
     let transport = stub_transport::StubTransport::new();
 
-    // Try to attach with the options containing restore packets
+    // Try to attach with the options
     let attach_result = endpoint
         .attach_with_options(transport, mqtt_ep::Mode::Client, connection_options)
         .await;
 
-    // Get stored packets after attempting connection
+    // Restore packets after connection (this is the new approach)
+    // Note: In real scenarios, this would be done after receiving CONNECT/CONNACK
+    let restore_packets_result = endpoint.restore_stored_packets(packets_to_restore).await;
+    let restore_qos2_result = endpoint
+        .restore_qos2_publish_handled_pids(qos2_pids_to_restore)
+        .await;
+
+    // Get stored packets after restore
     let final_packets = endpoint.get_stored_packets().await;
     assert!(
         final_packets.is_ok(),
@@ -178,21 +184,23 @@ async fn test_restore_and_get_stored_packets_roundtrip() {
     );
     let final_packets = final_packets.unwrap();
 
-    match attach_result {
-        Ok(()) => {
-            // Connection succeeded - verify restored packets behavior
+    // Verify the restoration happened (both should succeed or both should fail consistently)
+    match (attach_result, restore_packets_result, restore_qos2_result) {
+        (Ok(()), Ok(()), Ok(())) => {
+            // Connection and restoration succeeded - verify restored packets behavior
             assert_eq!(
                 final_packets.len(),
                 0,
                 "Should have 0 stored packets (empty restore list)"
             );
         }
-        Err(_) => {
-            // Connection failed (expected for stub transport) - API should still work
+        _ => {
+            // Connection or restoration failed (expected for stub transport) - API should still work
+            // Even if restore failed, get_stored_packets should still return results
             assert_eq!(
                 final_packets.len(),
                 0,
-                "Should have 0 stored packets when connection fails"
+                "Should have 0 stored packets when connection or restore fails"
             );
         }
     }

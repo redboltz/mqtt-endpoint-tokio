@@ -20,20 +20,14 @@
 // OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 // SOFTWARE.
 
-use crate::mqtt_ep::common::HashSet;
-use crate::mqtt_ep::packet::{GenericStorePacket, IsPacketId};
 use derive_builder::Builder;
 use getset::{CopyGetters, Getters};
 
-/// Generic MQTT Connection Options - Configuration for MQTT endpoint connections
+/// MQTT Connection Options - Configuration for MQTT endpoint connections
 ///
 /// This struct contains configuration options that can be set dynamically for each
 /// connection or reconnection attempt. It provides fine-grained control over various
 /// aspects of MQTT protocol behavior and connection management.
-///
-/// # Type Parameters
-///
-/// * `PacketIdType` - The type used for packet IDs (typically `u16`, but can be `u32` for extended scenarios)
 ///
 /// # Key Features
 ///
@@ -41,14 +35,13 @@ use getset::{CopyGetters, Getters};
 /// - **Protocol Behavior Control**: Configure automatic responses and protocol features
 /// - **Timeout Management**: Set various timeout values for different operations
 /// - **State Restoration**: Support for restoring connection state after reconnection
-/// - **Generic Packet ID Support**: Can use u16 or u32 packet IDs for different deployment scenarios
 ///
 /// # Usage
 ///
 /// ```ignore
-/// use mqtt_endpoint_tokio::mqtt_ep::GenericConnectionOption;
+/// use mqtt_endpoint_tokio::mqtt_ep::ConnectionOption;
 ///
-/// let options = GenericConnectionOption::<u16>::builder()
+/// let options = ConnectionOption::builder()
 ///     .pingreq_send_interval_ms(30000)
 ///     .auto_pub_response(true)
 ///     .connection_establish_timeout_ms(10000)
@@ -57,10 +50,7 @@ use getset::{CopyGetters, Getters};
 /// ```
 #[derive(Debug, Clone, Builder, Getters, CopyGetters)]
 #[builder(derive(Debug), pattern = "owned", setter(into))]
-pub struct GenericConnectionOption<PacketIdType>
-where
-    PacketIdType: IsPacketId,
-{
+pub struct ConnectionOption {
     /// PINGREQ send interval override in milliseconds
     ///
     /// Overrides the interval for sending PINGREQ packets to maintain the connection alive.
@@ -175,30 +165,6 @@ where
     #[getset(get = "pub")]
     recv_buffer_size: Option<usize>,
 
-    /// Packets to restore after reconnection
-    ///
-    /// List of packets that should be restored and potentially retransmitted
-    /// after a reconnection. This is used to maintain QoS guarantees across
-    /// connection interruptions.
-    ///
-    /// # Default
-    /// Empty vector
-    #[builder(default, setter(into, strip_option))]
-    #[getset(get = "pub")]
-    restore_packets: Vec<GenericStorePacket<PacketIdType>>,
-
-    /// Set of QoS 2 PUBLISH packet IDs that have been handled
-    ///
-    /// Used to track which QoS 2 PUBLISH packets have already been processed
-    /// to prevent duplicate delivery after reconnection. This set contains
-    /// packet IDs of PUBLISH packets that have reached the PUBCOMP stage.
-    ///
-    /// # Default
-    /// Empty set
-    #[builder(default, setter(into, strip_option))]
-    #[getset(get = "pub")]
-    restore_qos2_publish_handled: HashSet<PacketIdType>,
-
     /// Enable queueing when ReceiveMaximum limit is reached
     ///
     /// When the ReceiveMaximum property limit is reached for QoS 1 and QoS 2 PUBLISH packets,
@@ -213,20 +179,11 @@ where
     queuing_receive_maximum: bool,
 }
 
-/// Type alias for ConnectionOption with u16 packet IDs (most common case)
-///
-/// This is a convenience type alias that most applications will use.
-/// It uses `u16` for packet IDs, which is the standard MQTT packet ID type.
-pub type ConnectionOption = GenericConnectionOption<u16>;
-
-/// Default implementation for GenericConnectionOption
+/// Default implementation for ConnectionOption
 ///
 /// Provides sensible defaults for all configuration options that balance
 /// functionality with resource usage.
-impl<PacketIdType> Default for GenericConnectionOption<PacketIdType>
-where
-    PacketIdType: IsPacketId,
-{
+impl Default for ConnectionOption {
     fn default() -> Self {
         Self::builder()
             .auto_pub_response(true)
@@ -236,58 +193,29 @@ where
             .pingresp_recv_timeout_ms(0u64)
             .connection_establish_timeout_ms(0u64)
             .shutdown_timeout_ms(5000u64)
-            .restore_packets(Vec::new())
-            .restore_qos2_publish_handled(HashSet::default())
             .queuing_receive_maximum(false)
             .build()
-            .expect("Default GenericConnectionOption should be valid")
+            .expect("Default ConnectionOption should be valid")
     }
 }
 
-/// Implementation methods for GenericConnectionOption
-impl<PacketIdType> GenericConnectionOption<PacketIdType>
-where
-    PacketIdType: IsPacketId,
-{
-    /// Create a new builder for GenericConnectionOption
+/// Implementation methods for ConnectionOption
+impl ConnectionOption {
+    /// Create a new builder for ConnectionOption
     ///
     /// Returns a builder that can be used to configure and construct
-    /// a GenericConnectionOption instance with custom settings.
+    /// a ConnectionOption instance with custom settings.
     ///
     /// # Examples
     ///
     /// ```ignore
-    /// let options = GenericConnectionOption::<u16>::builder()
+    /// let options = ConnectionOption::builder()
     ///     .pingreq_send_interval_ms(30000)
     ///     .auto_pub_response(true)
     ///     .build()
     ///     .unwrap();
     /// ```
-    pub fn builder() -> GenericConnectionOptionBuilder<PacketIdType> {
-        GenericConnectionOptionBuilder::<PacketIdType>::default()
-    }
-
-    /// Extract restoration data from the connection options
-    ///
-    /// Moves both `restore_packets` and `restore_qos2_publish_handled` out of the struct,
-    /// consuming the options in the process. This is typically used when initializing
-    /// a connection to restore previous state.
-    ///
-    /// # Returns
-    ///
-    /// A tuple containing:
-    /// - `Vec<mqtt_ep::packet::GenericStorePacket<PacketIdType>>`: Packets to restore
-    /// - `mqtt_ep::common::HashSet<PacketIdType>`: Set of handled QoS 2 PUBLISH packet IDs
-    ///
-    /// # Examples
-    ///
-    /// ```ignore
-    /// let options = GenericConnectionOption::<u16>::default();
-    /// let (restore_packets, handled_qos2) = options.into_restore_data();
-    /// ```
-    pub fn into_restore_data(
-        self,
-    ) -> (Vec<GenericStorePacket<PacketIdType>>, HashSet<PacketIdType>) {
-        (self.restore_packets, self.restore_qos2_publish_handled)
+    pub fn builder() -> ConnectionOptionBuilder {
+        ConnectionOptionBuilder::default()
     }
 }

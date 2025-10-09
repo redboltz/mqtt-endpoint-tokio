@@ -39,7 +39,7 @@ use mqtt_protocol_core::mqtt;
 use mqtt_protocol_core::mqtt::prelude::*;
 
 use crate::mqtt_ep::connection_error::ConnectionError;
-use crate::mqtt_ep::connection_option::GenericConnectionOption;
+use crate::mqtt_ep::connection_option::ConnectionOption;
 use crate::mqtt_ep::packet_filter::PacketFilter;
 use crate::mqtt_ep::request_response::RequestResponse;
 
@@ -302,12 +302,8 @@ where
     where
         T: TransportOps + Send + 'static,
     {
-        self.attach_with_options(
-            transport,
-            mode,
-            GenericConnectionOption::<PacketIdType>::default(),
-        )
-        .await
+        self.attach_with_options(transport, mode, ConnectionOption::default())
+            .await
     }
 
     /// Attach a transport with specific connection options
@@ -349,7 +345,7 @@ where
     /// use mqtt_endpoint_tokio::mqtt_ep::transport::connect_helper;
     ///
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
-    /// let options = mqtt_ep::connection_option::GenericConnectionOption::<u16>::default();
+    /// let options = mqtt_ep::connection_option::ConnectionOption::default();
     /// let tls_stream = mqtt_ep::transport::connect_helper::connect_tcp_tls("127.0.0.1:8883", "localhost", None, None).await?;
     /// let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
     /// endpoint.attach_with_options(transport, mqtt_ep::endpoint::Mode::Client, options).await?;
@@ -358,7 +354,7 @@ where
         &self,
         transport: T,
         mode: Mode,
-        options: GenericConnectionOption<PacketIdType>,
+        options: ConnectionOption,
     ) -> Result<(), ConnectionError>
     where
         T: TransportOps + Send + 'static,
@@ -833,6 +829,186 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
+    /// Set automatic PUBLISH response handling
+    ///
+    /// This method controls whether the endpoint automatically sends PUBACK, PUBREC, and PUBCOMP
+    /// responses for received PUBLISH packets according to their QoS level.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to enable automatic PUBLISH response handling
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the setting was successfully applied
+    /// * `Err(ConnectionError)` - If setting failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// endpoint.set_auto_pub_response(false).await?;
+    /// ```
+    pub async fn set_auto_pub_response(&self, enabled: bool) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetAutoPubResponse {
+                enabled,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Set automatic PING response handling
+    ///
+    /// This method controls whether the endpoint automatically responds to PINGREQ packets
+    /// with PINGRESP packets.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to enable automatic PING response handling
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the setting was successfully applied
+    /// * `Err(ConnectionError)` - If setting failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// endpoint.set_auto_ping_response(false).await?;
+    /// ```
+    pub async fn set_auto_ping_response(&self, enabled: bool) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetAutoPingResponse {
+                enabled,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Set automatic topic alias mapping for outgoing messages
+    ///
+    /// This method controls whether the endpoint automatically maps frequently used topics
+    /// to topic aliases in outgoing PUBLISH packets to reduce bandwidth usage.
+    /// Only available in MQTT v5.0.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to enable automatic topic alias mapping
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the setting was successfully applied
+    /// * `Err(ConnectionError)` - If setting failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// endpoint.set_auto_map_topic_alias_send(true).await?;
+    /// ```
+    pub async fn set_auto_map_topic_alias_send(
+        &self,
+        enabled: bool,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetAutoMapTopicAliasSend {
+                enabled,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Set automatic topic alias replacement for outgoing messages
+    ///
+    /// This method controls whether the endpoint automatically replaces topic names with
+    /// topic aliases in outgoing PUBLISH packets when aliases are available.
+    /// Only available in MQTT v5.0.
+    ///
+    /// # Arguments
+    ///
+    /// * `enabled` - Whether to enable automatic topic alias replacement
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the setting was successfully applied
+    /// * `Err(ConnectionError)` - If setting failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// endpoint.set_auto_replace_topic_alias_send(true).await?;
+    /// ```
+    pub async fn set_auto_replace_topic_alias_send(
+        &self,
+        enabled: bool,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetAutoReplaceTopicAliasSend {
+                enabled,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
     /// Get QoS 2 publish handled packet IDs
     ///
     /// This method retrieves all packet IDs for QoS 2 PUBLISH packets that have been handled.
@@ -867,6 +1043,103 @@ where
 
         tx_send
             .send(RequestResponse::GetQos2PublishHandled { response_tx })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Restore stored packets to the connection
+    ///
+    /// This method restores previously saved packets to the connection state.
+    /// This is typically used after receiving a CONNECT packet (for servers) or
+    /// after receiving a CONNACK packet (for clients) to restore session state,
+    /// allowing QoS 1 and QoS 2 message flows to continue after reconnection.
+    ///
+    /// # Arguments
+    ///
+    /// * `packets` - Vector of stored packets to restore
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If packets were successfully restored
+    /// * `Err(ConnectionError)` - If restoration failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// // ... attach transport and receive CONNACK ...
+    /// let stored_packets = vec![/* previously saved packets */];
+    /// endpoint.restore_stored_packets(stored_packets).await?;
+    /// ```
+    pub async fn restore_stored_packets(
+        &self,
+        packets: Vec<GenericStorePacket<PacketIdType>>,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::RestoreStoredPackets {
+                packets,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Restore QoS 2 publish handled packet IDs to the connection
+    ///
+    /// This method restores the set of QoS 2 PUBLISH packet IDs that have been handled.
+    /// This is typically used after receiving a CONNECT packet (for servers) or
+    /// after receiving a CONNACK packet (for clients) to restore session state,
+    /// preventing duplicate delivery of QoS 2 messages after reconnection.
+    ///
+    /// # Arguments
+    ///
+    /// * `pids` - Set of packet IDs for handled QoS 2 PUBLISH packets
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If packet IDs were successfully restored
+    /// * `Err(ConnectionError)` - If restoration failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// // ... attach transport and receive CONNACK ...
+    /// let handled_pids = mqtt_ep::common::HashSet::default(); // previously saved
+    /// endpoint.restore_qos2_publish_handled_pids(handled_pids).await?;
+    /// ```
+    pub async fn restore_qos2_publish_handled_pids(
+        &self,
+        pids: HashSet<PacketIdType>,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::RestoreQos2PublishHandled { pids, response_tx })
             .map_err(|_| ConnectionError::ChannelClosed)?;
 
         response_rx
@@ -1011,7 +1284,7 @@ where
     /// Apply connection options to the MQTT connection
     fn apply_connection_options(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
-        options: GenericConnectionOption<PacketIdType>,
+        options: ConnectionOption,
     ) -> (Duration, Option<usize>, bool) {
         // Apply scalar settings (these are Copy, so we can access them after partial move)
         connection.set_pingreq_send_interval(*options.pingreq_send_interval_ms());
@@ -1021,16 +1294,10 @@ where
         connection.set_auto_replace_topic_alias_send(*options.auto_replace_topic_alias_send());
         connection.set_pingresp_recv_timeout(*options.pingresp_recv_timeout_ms());
 
-        // Get shutdown timeout and optional recv buffer size before moving options
+        // Get shutdown timeout and optional recv buffer size
         let shutdown_timeout = Duration::from_millis(*options.shutdown_timeout_ms());
         let recv_buffer_size = *options.recv_buffer_size();
-
         let queuing_receive_maximum = *options.queuing_receive_maximum();
-
-        // Move large collections efficiently using the helper method
-        let (restore_packets, restore_qos2_publish_handled) = options.into_restore_data();
-        connection.restore_packets(restore_packets);
-        connection.restore_qos2_publish_handled(restore_qos2_publish_handled);
 
         (shutdown_timeout, recv_buffer_size, queuing_receive_maximum)
     }
@@ -1190,6 +1457,30 @@ where
                         Some(RequestResponse::GetProtocolVersion { response_tx }) => {
                             let version = connection.get_protocol_version();
                             let _ = response_tx.send(Ok(version));
+                        }
+                        Some(RequestResponse::RestoreStoredPackets { packets, response_tx }) => {
+                            connection.restore_packets(packets);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::RestoreQos2PublishHandled { pids, response_tx }) => {
+                            connection.restore_qos2_publish_handled(pids);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::SetAutoPubResponse { enabled, response_tx }) => {
+                            connection.set_auto_pub_response(enabled);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::SetAutoPingResponse { enabled, response_tx }) => {
+                            connection.set_auto_ping_response(enabled);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::SetAutoMapTopicAliasSend { enabled, response_tx }) => {
+                            connection.set_auto_map_topic_alias_send(enabled);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        Some(RequestResponse::SetAutoReplaceTopicAliasSend { enabled, response_tx }) => {
+                            connection.set_auto_replace_topic_alias_send(enabled);
+                            let _ = response_tx.send(Ok(()));
                         }
                         None => break, // Channel closed
                     }

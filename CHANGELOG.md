@@ -1,3 +1,22 @@
+# 0.6.0
+
+## Breaking changes
+
+* Remove inappropriate fields from ConnectionOption. #26
+   * The fields restore_packets and restore_qos2_publish_handled have been removed.
+   * Whether to restore or not can now be determined after the server receives the CONNECT packet.
+
+* Remove inappropriate fields from ConnectionOption. #26
+   * restore_packets and restore_qos2_publish_handled are removed.
+   * restore or not restore can be judged after CONNECT packet is received on server.
+
+## Other updates
+
+* Add async fn restore_stored_packets() and async fn restore_qos2_publish_handled_pids(). #26
+   * These functions can be used as replacements for the removed ConnectionOption fields.
+* Addasync fn set_auto_pub_response(), set_auto_ping_response(), set_auto_map_topic_alias(), and set_auto_replace_topic_alias().
+   * These settings can now be configured either through ConnectionOption or by calling the respective set_*() async functions.
+
 # 0.5.1
 
 * Add re-export mqtt-protocol-core types. #25
