@@ -27,7 +27,7 @@ use crate::mqtt_ep::packet::{GenericPacket, GenericStorePacket, IsPacketId};
 use crate::mqtt_ep::transport::TransportOps;
 use crate::mqtt_ep::Version;
 
-use crate::mqtt_ep::connection_option::GenericConnectionOption;
+use crate::mqtt_ep::connection_option::ConnectionOption;
 use crate::mqtt_ep::endpoint::Mode;
 use crate::mqtt_ep::packet_filter::PacketFilter;
 
@@ -66,7 +66,7 @@ where
     Attach {
         transport: Box<dyn TransportOps + Send>,
         mode: Mode,
-        options: GenericConnectionOption<PacketIdType>,
+        options: ConnectionOption,
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     },
     GetStoredPackets {
@@ -89,5 +89,29 @@ where
     RegulateForStore {
         packet: GenericPublish<PacketIdType>,
         response_tx: oneshot::Sender<Result<GenericPublish<PacketIdType>, ConnectionError>>,
+    },
+    RestoreStoredPackets {
+        packets: Vec<GenericStorePacket<PacketIdType>>,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
+    RestoreQos2PublishHandled {
+        pids: HashSet<PacketIdType>,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
+    SetAutoPubResponse {
+        enabled: bool,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
+    SetAutoPingResponse {
+        enabled: bool,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
+    SetAutoMapTopicAliasSend {
+        enabled: bool,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
+    SetAutoReplaceTopicAliasSend {
+        enabled: bool,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     },
 }
