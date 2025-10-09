@@ -6,12 +6,12 @@
 [![codecov](https://codecov.io/gh/redboltz/mqtt-endpoint-tokio/branch/main/graph/badge.svg)](https://codecov.io/gh/redboltz/mqtt-endpoint-tokio)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-A high-performance async MQTT client/server library for Rust with tokio, supporting MQTT v5.0 and v3.1.1 with TCP, TLS, and WebSocket transports.
+A high-performance async MQTT client/server library for Rust with tokio, supporting MQTT v5.0 and v3.1.1 with TCP, TLS, WebSocket, and QUIC transports.
 
 ## Features
 
 - **Full MQTT Protocol Support**: MQTT v5.0 and v3.1.1 compatible
-- **Multiple Transport Layers**: TCP, TLS, and WebSocket support
+- **Multiple Transport Layers**: TCP, TLS, WebSocket, and QUIC support
 - **Async/Await**: Built on tokio for high-performance async I/O
 - **Generic Packet ID Support**: Supports both u16 and u32 packet IDs for broker clustering
 - **Sans-I/O Protocol Core**: Uses [mqtt-protocol-core](https://crates.io/crates/mqtt-protocol-core) for protocol implementation
@@ -31,6 +31,9 @@ Secure connections with full TLS support using rustls.
 WebSocket connections for web-based MQTT clients, supporting both:
 - Plain WebSocket (ws://)
 - Secure WebSocket over TLS (wss://)
+
+### QUIC Transport
+High-performance QUIC connections for low-latency MQTT communication using quinn.
 
 ## Quick Start
 
@@ -113,6 +116,29 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).await?;
 
     let transport = mqtt_ep::transport::TlsTransport::from_stream(tls_stream);
+    // ... rest of MQTT communication
+
+    Ok(())
+}
+```
+
+### QUIC Example
+
+```rust
+use mqtt_endpoint_tokio::mqtt_ep;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect via QUIC
+    let (send_stream, recv_stream) = mqtt_ep::transport::connect_helper::connect_quic(
+        "127.0.0.1:14567",
+        "localhost",
+        None,
+        None,
+        None
+    ).await?;
+
+    let transport = mqtt_ep::transport::QuicTransport::from_streams(send_stream, recv_stream);
     // ... rest of MQTT communication
 
     Ok(())

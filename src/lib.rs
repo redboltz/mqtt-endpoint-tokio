@@ -23,7 +23,7 @@
 //! # MQTT Endpoint Tokio
 //!
 //! A high-performance async MQTT client/server library for Rust with tokio, supporting
-//! MQTT v5.0 and v3.1.1 with TCP, TLS, and WebSocket transports.
+//! MQTT v5.0 and v3.1.1 with TCP, TLS, WebSocket, and QUIC transports.
 //!
 //! This library provides a Sans-I/O MQTT protocol implementation built on top of
 //! `mqtt-protocol-core`, with async I/O operations handled by tokio.
@@ -31,7 +31,7 @@
 //! ## Features
 //!
 //! - **MQTT Protocol Support**: Both MQTT v3.1.1 and v5.0
-//! - **Multiple Transports**: TCP, TLS, and WebSocket
+//! - **Multiple Transports**: TCP, TLS, WebSocket, and QUIC
 //! - **Generic Packet ID Types**: Support for u16 and u32 packet IDs for broker clustering
 //! - **Client and Server Roles**: Both client and server endpoint implementations
 //! - **Async/Await**: Built on tokio for high-performance async I/O
@@ -63,7 +63,7 @@
 //! ## Main Components
 //!
 //! - [`mqtt_ep::endpoint`]: Core endpoint functionality for both client and server
-//! - [`mqtt_ep::transport`]: Transport layer implementations (TCP, TLS, WebSocket)
+//! - [`mqtt_ep::transport`]: Transport layer implementations (TCP, TLS, WebSocket, QUIC)
 //! - [`mqtt_ep::connection_option`]: Configuration options for connection behavior
 //! - [`mqtt_ep::packet`]: MQTT packet types and builders
 //! - [`mqtt_ep::packet_filter`]: Packet filtering for selective message reception
