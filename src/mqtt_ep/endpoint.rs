@@ -1629,18 +1629,18 @@ where
                                     ).await;
                                 } else {
                                     // Connection closed (n = 0) - notify all pending recv requests
-                                    Self::notify_recv_connection_error(&mut context.pending_requests.recv);
-                                    context.transport = None;
-                                    context.buffer_size = 0;
-                                    context.consumed_bytes = 0;
+                                    Self::handle_close_event(
+                                        &mut connection,
+                                        &mut context,
+                                    ).await;
                                 }
                             }
                             Err(_) => {
                                 // Connection error - notify all pending recv requests
-                                Self::notify_recv_connection_error(&mut context.pending_requests.recv);
-                                context.transport = None;
-                                context.buffer_size = 0;
-                                context.consumed_bytes = 0;
+                                Self::handle_close_event(
+                                    &mut connection,
+                                    &mut context,
+                                ).await;
                             }
                         }
                     }
@@ -1654,13 +1654,13 @@ where
                         context.connection_mode = None;
 
                         // Perform close equivalent processing with timeout error
-                        Self::notify_recv_timeout_error(&mut context.pending_requests.recv);
                         if let Some(ref mut t) = context.transport {
                             t.shutdown(context.timers.shutdown_timeout).await;
                         }
-                        context.transport = None;
-                        context.buffer_size = 0;
-                        context.consumed_bytes = 0;
+                        Self::handle_close_event(
+                            &mut connection,
+                            &mut context,
+                        ).await;
                     }
                 }
 
@@ -1706,6 +1706,31 @@ where
 
         // Notify close request completion
         let _ = response_tx.send(Ok(()));
+    }
+
+    /// Handle event that causes the connection to be closed
+    async fn handle_close_event(
+        connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
+        context: &mut Context<PacketIdType>,
+    ) {
+        Self::notify_recv_connection_error(&mut context.pending_requests.recv);
+
+        // Notify connection about close and process events (including timer cancellation)
+        let events = connection.notify_closed();
+        let _ = Self::process_connection_events(
+            connection,
+            &mut context.transport,
+            &mut context.timers,
+            &mut context.pending_requests.acquire_packet_id,
+            events,
+            &mut context.pending_requests.send,
+        )
+        .await;
+
+        // Clear transport after processing events
+        context.transport = None;
+        context.buffer_size = 0;
+        context.consumed_bytes = 0;
     }
 
     async fn process_connection_events(
