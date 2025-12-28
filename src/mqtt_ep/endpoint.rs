@@ -155,16 +155,25 @@ where
     pub send: RequestSendVec<PacketIdType>,
 }
 
-impl<PacketIdType> PendingRequests<PacketIdType>
+impl<PacketIdType> Default for PendingRequests<PacketIdType>
 where
     PacketIdType: IsPacketId,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             acquire_packet_id: Vec::new(),
             recv: Vec::new(),
             send: Vec::new(),
         }
+    }
+}
+
+impl<PacketIdType> PendingRequests<PacketIdType>
+where
+    PacketIdType: IsPacketId,
+{
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -1367,7 +1376,7 @@ where
                     match request {
                         Some(RequestResponse::Send { packet, response_tx }) => {
                             if context.transport.is_some() || context.offline_publish_enabled {
-                                if context.queuing_receive_maximum && connection.get_receive_maximum_vacancy_for_send().map_or(false, |v| v == 0) {
+                                if context.queuing_receive_maximum && (connection.get_receive_maximum_vacancy_for_send() == Some(0)) {
                                     // Add packet to queue for later retry
                                     context.pending_requests.send.push((packet, response_tx));
                                 } else {
@@ -1718,7 +1727,7 @@ where
                     while !pending_send_packets.is_empty()
                         && connection
                             .get_receive_maximum_vacancy_for_send()
-                            .map_or(false, |v| v > 0)
+                            .is_some_and(|v| v > 0)
                     {
                         let (packet, response_tx) = pending_send_packets.remove(0);
 
