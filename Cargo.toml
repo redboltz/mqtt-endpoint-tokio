@@ -52,10 +52,11 @@ rcgen = "0.12"
 tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] }
 
 [features]
-default = ["tls", "ws", "quic"]
+default = ["tls", "ws", "quic", "unix-socket"]
 tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs"]
 ws = ["dep:tokio-tungstenite", "dep:tungstenite", "dep:futures-util", "dep:futures"]
 quic = ["dep:quinn", "tls"]
+unix-socket = []
 tracing = ["dep:tracing"]
 
 # Small String Optimization (SSO) features from mqtt-protocol-core

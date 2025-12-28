@@ -46,6 +46,8 @@ mod quic;
 mod tcp;
 #[cfg(feature = "tls")]
 mod tls;
+#[cfg(all(feature = "unix-socket", unix))]
+mod unix;
 #[cfg(feature = "ws")]
 mod websocket;
 
@@ -54,6 +56,8 @@ pub use quic::QuicTransport;
 pub use tcp::TcpTransport;
 #[cfg(feature = "tls")]
 pub use tls::TlsTransport;
+#[cfg(all(feature = "unix-socket", unix))]
+pub use unix::UnixStreamTransport;
 #[cfg(feature = "ws")]
 pub use websocket::{WebSocketAdapter, WebSocketTransport};
 
