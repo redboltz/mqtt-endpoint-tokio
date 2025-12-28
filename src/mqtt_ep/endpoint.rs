@@ -745,6 +745,56 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
+    /// Erase a stored PUBLISH packet from the connection store
+    ///
+    /// This method removes a PUBLISH packet from the connection's store based on its packet ID.
+    /// It also releases the packet ID for reuse. This is useful when you want to discard
+    /// an in-flight PUBLISH packet without completing its QoS flow.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet_id` - The packet ID of the PUBLISH packet to erase
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the packet was successfully erased
+    /// * `Err(ConnectionError)` - If erase failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// // ... connect to transport ...
+    /// let packet_id = endpoint.acquire_packet_id().await?;
+    /// // ... send PUBLISH packet with packet_id ...
+    /// endpoint.erase_stored_publish(packet_id).await?;
+    /// ```
+    pub async fn erase_stored_publish(
+        &self,
+        packet_id: PacketIdType,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::EraseStoredPublish {
+                packet_id,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
     /// Get all stored packets from the connection store
     ///
     /// This method retrieves all currently stored packets from the connection.
@@ -1377,6 +1427,24 @@ where
                         }
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                             let events = connection.release_packet_id(packet_id);
+                            match Self::process_connection_events(
+                                &mut connection,
+                                &mut context.transport,
+                                &mut context.timers,
+                                &mut context.pending_requests.acquire_packet_id,
+                                events,
+                                &mut context.pending_requests.send
+                            ).await {
+                                Ok(_received_packet) => {
+                                    let _ = response_tx.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    let _ = response_tx.send(Err(error));
+                                }
+                            }
+                        }
+                        Some(RequestResponse::EraseStoredPublish { packet_id, response_tx }) => {
+                            let events = connection.erase_stored_publish(packet_id);
                             match Self::process_connection_events(
                                 &mut connection,
                                 &mut context.transport,
