@@ -181,7 +181,7 @@ async fn test_pingreq_recv_timeout() {
 
     // Verify CONNACK packet was sent (packet type 0x20)
     assert!(
-        send_calls.len() >= 1,
+        !send_calls.is_empty(),
         "Should have sent at least CONNACK packet"
     );
     if let stub_transport::TransportCall::Send { ref data } = send_calls[0] {
@@ -231,7 +231,7 @@ async fn test_pingreq_recv_timeout() {
         .collect();
 
     assert!(
-        final_shutdown_calls.len() >= 1,
+        !final_shutdown_calls.is_empty(),
         "Should have called shutdown at least once (either automatic or manual)"
     );
 }
@@ -529,7 +529,7 @@ async fn test_pingresp_recv_timeout_cancel() {
         .collect();
 
     assert!(
-        final_shutdown_calls.len() >= 1,
+        !final_shutdown_calls.is_empty(),
         "Should have called shutdown at least once (due to manual close)"
     );
 }

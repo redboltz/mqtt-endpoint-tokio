@@ -1,3 +1,7 @@
+# 0.6.1
+
+* Add erase_stored_publish() method to Connection. #29
+
 # 0.6.0
 
 ## Breaking changes

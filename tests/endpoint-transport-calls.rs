@@ -151,7 +151,7 @@ async fn test_attach_with_options_accepts_timeout_cancel() {
 
     // Verify that transport recv was called
     let calls = stub.get_calls();
-    assert!(calls.len() > 0, "Should have made transport calls");
+    assert!(!calls.is_empty(), "Should have made transport calls");
 
     let has_recv = calls
         .iter()
@@ -186,7 +186,7 @@ async fn test_recv_calls_transport_recv() {
     let calls = stub.get_calls();
 
     // Should have at least one recv call
-    assert!(calls.len() >= 1, "Should have recv calls");
+    assert!(!calls.is_empty(), "Should have recv calls");
 
     // Check if there's a recv call
     let has_recv = calls
@@ -214,7 +214,7 @@ async fn test_close_calls_shutdown() {
     // Verify shutdown was called
     let calls = stub.get_calls();
 
-    assert!(calls.len() >= 1, "Should have shutdown calls");
+    assert!(!calls.is_empty(), "Should have shutdown calls");
 
     // Check if there's a shutdown call
     let has_shutdown = calls
@@ -301,5 +301,5 @@ async fn test_connection_establish_timeout_triggers() {
     }
 
     let calls = stub.get_calls();
-    assert!(calls.len() > 0, "Should have made transport calls");
+    assert!(!calls.is_empty(), "Should have made transport calls");
 }

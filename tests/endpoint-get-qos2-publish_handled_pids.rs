@@ -44,10 +44,7 @@ async fn test_get_qos2_publish_handled_pids() {
             assert!(pids.is_empty());
         }
         Err(e) => {
-            assert!(
-                false,
-                "get_qos2_publish_handled_pids completed with error: {e:?}"
-            );
+            panic!("get_qos2_publish_handled_pids completed with error: {e:?}");
         }
     }
 
@@ -101,10 +98,7 @@ async fn test_get_qos2_publish_handled_pids() {
             );
         }
         Err(e) => {
-            assert!(
-                false,
-                "get_qos2_publish_handled_pids completed with error: {e:?}"
-            );
+            panic!("get_qos2_publish_handled_pids completed with error: {e:?}");
         }
     }
 }

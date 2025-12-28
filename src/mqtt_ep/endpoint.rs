@@ -155,16 +155,25 @@ where
     pub send: RequestSendVec<PacketIdType>,
 }
 
-impl<PacketIdType> PendingRequests<PacketIdType>
+impl<PacketIdType> Default for PendingRequests<PacketIdType>
 where
     PacketIdType: IsPacketId,
 {
-    pub fn new() -> Self {
+    fn default() -> Self {
         Self {
             acquire_packet_id: Vec::new(),
             recv: Vec::new(),
             send: Vec::new(),
         }
+    }
+}
+
+impl<PacketIdType> PendingRequests<PacketIdType>
+where
+    PacketIdType: IsPacketId,
+{
+    pub fn new() -> Self {
+        Self::default()
     }
 }
 
@@ -735,6 +744,56 @@ where
 
         tx_send
             .send(RequestResponse::ReleasePacketId {
+                packet_id,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
+    /// Erase a stored PUBLISH packet from the connection store
+    ///
+    /// This method removes a PUBLISH packet from the connection's store based on its packet ID.
+    /// It also releases the packet ID for reuse. This is useful when you want to discard
+    /// an in-flight PUBLISH packet without completing its QoS flow.
+    ///
+    /// # Arguments
+    ///
+    /// * `packet_id` - The packet ID of the PUBLISH packet to erase
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(())` - If the packet was successfully erased
+    /// * `Err(ConnectionError)` - If erase failed
+    ///
+    /// # Errors
+    ///
+    /// This method can return errors in the following cases:
+    /// - The endpoint's internal channel is closed
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
+    /// // ... connect to transport ...
+    /// let packet_id = endpoint.acquire_packet_id().await?;
+    /// // ... send PUBLISH packet with packet_id ...
+    /// endpoint.erase_stored_publish(packet_id).await?;
+    /// ```
+    pub async fn erase_stored_publish(
+        &self,
+        packet_id: PacketIdType,
+    ) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::EraseStoredPublish {
                 packet_id,
                 response_tx,
             })
@@ -1317,7 +1376,7 @@ where
                     match request {
                         Some(RequestResponse::Send { packet, response_tx }) => {
                             if context.transport.is_some() || context.offline_publish_enabled {
-                                if context.queuing_receive_maximum && connection.get_receive_maximum_vacancy_for_send().map_or(false, |v| v == 0) {
+                                if context.queuing_receive_maximum && (connection.get_receive_maximum_vacancy_for_send() == Some(0)) {
                                     // Add packet to queue for later retry
                                     context.pending_requests.send.push((packet, response_tx));
                                 } else {
@@ -1377,6 +1436,24 @@ where
                         }
                         Some(RequestResponse::ReleasePacketId { packet_id, response_tx }) => {
                             let events = connection.release_packet_id(packet_id);
+                            match Self::process_connection_events(
+                                &mut connection,
+                                &mut context.transport,
+                                &mut context.timers,
+                                &mut context.pending_requests.acquire_packet_id,
+                                events,
+                                &mut context.pending_requests.send
+                            ).await {
+                                Ok(_received_packet) => {
+                                    let _ = response_tx.send(Ok(()));
+                                }
+                                Err(error) => {
+                                    let _ = response_tx.send(Err(error));
+                                }
+                            }
+                        }
+                        Some(RequestResponse::EraseStoredPublish { packet_id, response_tx }) => {
+                            let events = connection.erase_stored_publish(packet_id);
                             match Self::process_connection_events(
                                 &mut connection,
                                 &mut context.transport,
@@ -1650,7 +1727,7 @@ where
                     while !pending_send_packets.is_empty()
                         && connection
                             .get_receive_maximum_vacancy_for_send()
-                            .map_or(false, |v| v > 0)
+                            .is_some_and(|v| v > 0)
                     {
                         let (packet, response_tx) = pending_send_packets.remove(0);
 

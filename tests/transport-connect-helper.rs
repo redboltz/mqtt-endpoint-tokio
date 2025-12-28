@@ -747,9 +747,8 @@ async fn test_connect_quic_with_server() {
     .await;
 
     // This should succeed with insecure config, covering the NoVerification implementation
-    if result.is_ok() {
+    if let Ok((_send_stream, _recv_stream)) = result {
         // Success means we covered the NoVerification methods
-        let (_send_stream, _recv_stream) = result.unwrap();
     }
 
     // Test with timeout None to cover stream opening None branch

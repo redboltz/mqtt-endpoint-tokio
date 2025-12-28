@@ -60,6 +60,10 @@ where
         packet_id: PacketIdType,
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     },
+    EraseStoredPublish {
+        packet_id: PacketIdType,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
     Close {
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     },
