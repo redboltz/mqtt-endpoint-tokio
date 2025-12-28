@@ -17,25 +17,25 @@ categories = ["network-programming", "asynchronous", "api-bindings"]
 # Core dependencies
 derive_builder = "0.20"
 getset = "0.1.5"
-tokio = { version = "1.0", features = ["net", "time", "rt", "rt-multi-thread", "macros", "sync"] }
+tokio = { version = "1.0", features = ["net", "time", "macros", "sync", "io-util", "rt"] }
 mqtt-protocol-core = "0.7"
 serde = { version = "1.0", features = ["derive"] }
 prefix_tree_map = "0.2"
 uuid = { version = "1.0", features = ["v4", "serde"] }
 
-# TLS support
-tokio-rustls = "0.26"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-native-certs = "0.8"
+# TLS support (optional)
+tokio-rustls = { version = "0.26", optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+rustls-native-certs = { version = "0.8", optional = true }
 
-# WebSocket support
-tokio-tungstenite = "0.20"
-tungstenite = "0.20"
-futures-util = "0.3"
-futures = "0.3"
+# WebSocket support (optional)
+tokio-tungstenite = { version = "0.20", optional = true }
+tungstenite = { version = "0.20", optional = true }
+futures-util = { version = "0.3", optional = true }
+futures = { version = "0.3", optional = true }
 
-# QUIC support
-quinn = "0.11"
+# QUIC support (optional)
+quinn = { version = "0.11", optional = true }
 
 # Logging (optional)
 tracing = { version = "0.1", optional = true }
@@ -49,9 +49,13 @@ url = "2.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "ansi"] }
 tracing-appender = { version = "0.2" }
 rcgen = "0.12"
+tokio = { version = "1.0", features = ["rt", "rt-multi-thread"] }
 
 [features]
-default = []
+default = ["tls", "ws", "quic"]
+tls = ["dep:tokio-rustls", "dep:rustls", "dep:rustls-native-certs"]
+ws = ["dep:tokio-tungstenite", "dep:tungstenite", "dep:futures-util", "dep:futures"]
+quic = ["dep:quinn", "tls"]
 tracing = ["dep:tracing"]
 
 # Small String Optimization (SSO) features from mqtt-protocol-core

@@ -57,6 +57,55 @@ jobs:
     - name: Run tests
       run: cargo test --verbose -- --nocapture
 
+  feature-check:
+    name: Feature Combination Check
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        features:
+          - name: "no-default-features"
+            flags: "--no-default-features"
+          - name: "tls-only"
+            flags: "--no-default-features --features tls"
+          - name: "ws-only"
+            flags: "--no-default-features --features ws"
+          - name: "quic-only"
+            flags: "--no-default-features --features quic"
+          - name: "tls-ws"
+            flags: "--no-default-features --features tls,ws"
+          - name: "default"
+            flags: ""
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Cache cargo registry
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo index
+      uses: actions/cache@v4
+      with:
+        path: ~/.cargo/git
+        key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Cache cargo build
+      uses: actions/cache@v4
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-target-${{ matrix.features.name }}-${{ hashFiles('**/Cargo.lock') }}
+
+    - name: Check ${{ matrix.features.name }}
+      run: cargo check ${{ matrix.features.flags }} --verbose
+
+    - name: Build ${{ matrix.features.name }}
+      run: cargo build ${{ matrix.features.flags }} --verbose
+
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
