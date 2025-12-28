@@ -26,13 +26,19 @@
 /// that can be used with transport `from_stream` methods. It handles the
 /// multi-step handshake processes for TLS and WebSocket connections.
 use super::TransportError;
+#[cfg(feature = "quic")]
 use quinn::{RecvStream, SendStream};
+#[cfg(any(feature = "ws", feature = "quic"))]
 use std::collections::HashMap;
+#[cfg(any(feature = "ws", feature = "quic"))]
 use std::net::SocketAddr;
+#[cfg(any(feature = "tls", feature = "quic"))]
 use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio::time::Duration;
+#[cfg(feature = "tls")]
 use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
+#[cfg(feature = "ws")]
 use tokio_tungstenite::{
     connect_async, tungstenite::http::Request, MaybeTlsStream, WebSocketStream,
 };
@@ -115,6 +121,7 @@ pub async fn connect_tcp(
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "tls")]
 pub async fn connect_tcp_tls(
     addr: &str,
     domain: &str,
@@ -181,6 +188,7 @@ pub async fn connect_tcp_tls(
 /// This function returns `WebSocketStream<MaybeTlsStream<TcpStream>>` which is compatible
 /// with the old WebSocketTransport design. With the new specialized variants, you should
 /// use direct connection establishment rather than this helper.
+#[cfg(feature = "ws")]
 pub async fn connect_tcp_ws(
     addr: &str,
     path: &str,
@@ -280,6 +288,7 @@ pub async fn connect_tcp_ws(
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(all(feature = "tls", feature = "ws"))]
 pub async fn connect_tcp_tls_ws(
     addr: &str,
     domain: &str,
@@ -376,6 +385,7 @@ pub async fn connect_tcp_tls_ws(
 /// # Ok(())
 /// # }
 /// ```
+#[cfg(feature = "quic")]
 pub async fn connect_quic(
     addr: &str,
     domain: Option<&str>,

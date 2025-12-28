@@ -41,14 +41,20 @@
 //! or other transport mechanisms not covered by the built-in implementations.
 
 pub mod connect_helper;
+#[cfg(feature = "quic")]
 mod quic;
 mod tcp;
+#[cfg(feature = "tls")]
 mod tls;
+#[cfg(feature = "ws")]
 mod websocket;
 
+#[cfg(feature = "quic")]
 pub use quic::QuicTransport;
 pub use tcp::TcpTransport;
+#[cfg(feature = "tls")]
 pub use tls::TlsTransport;
+#[cfg(feature = "ws")]
 pub use websocket::{WebSocketAdapter, WebSocketTransport};
 
 use std::future::Future;
@@ -63,8 +69,11 @@ use tokio::time::Duration;
 #[derive(Debug)]
 pub enum TransportError {
     Io(std::io::Error),
+    #[cfg(feature = "tls")]
     Tls(Box<dyn std::error::Error + Send + Sync>),
+    #[cfg(feature = "ws")]
     WebSocket(Box<dyn std::error::Error + Send + Sync>),
+    #[cfg(feature = "quic")]
     Quic(Box<dyn std::error::Error + Send + Sync>),
     Timeout,
     Connect(String),
@@ -75,8 +84,11 @@ impl std::fmt::Display for TransportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TransportError::Io(e) => write!(f, "IO error: {e}"),
+            #[cfg(feature = "tls")]
             TransportError::Tls(e) => write!(f, "TLS error: {e}"),
+            #[cfg(feature = "ws")]
             TransportError::WebSocket(e) => write!(f, "WebSocket error: {e}"),
+            #[cfg(feature = "quic")]
             TransportError::Quic(e) => write!(f, "QUIC error: {e}"),
             TransportError::Timeout => write!(f, "Operation timed out"),
             TransportError::Connect(msg) => write!(f, "Connection failed: {msg}"),

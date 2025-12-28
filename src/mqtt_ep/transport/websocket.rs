@@ -66,8 +66,10 @@ use tokio_tungstenite::{
 #[derive(Debug)]
 pub enum WebSocketTransport {
     TcpClient(WebSocketAdapter<TcpStream>),
+    #[cfg(feature = "tls")]
     TlsClient(WebSocketAdapter<tokio_rustls::client::TlsStream<TcpStream>>),
     TcpServer(WebSocketAdapter<TcpStream>),
+    #[cfg(feature = "tls")]
     TlsServer(WebSocketAdapter<tokio_rustls::server::TlsStream<TcpStream>>),
 }
 
@@ -130,6 +132,7 @@ impl WebSocketTransport {
     /// let transport = WebSocketTransport::from_tls_client_stream(ws_stream);
     /// # }
     /// ```
+    #[cfg(feature = "tls")]
     pub fn from_tls_client_stream(
         ws: WebSocketStream<tokio_rustls::client::TlsStream<TcpStream>>,
     ) -> Self {
@@ -181,6 +184,7 @@ impl WebSocketTransport {
     /// let transport = WebSocketTransport::from_tls_server_stream(ws_stream);
     /// # }
     /// ```
+    #[cfg(feature = "tls")]
     pub fn from_tls_server_stream(
         ws: WebSocketStream<tokio_rustls::server::TlsStream<TcpStream>>,
     ) -> Self {
@@ -275,6 +279,7 @@ impl TransportOps for WebSocketTransport {
                         .await
                         .map_err(|e| TransportError::WebSocket(Box::new(e)))
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsClient(adapter) => {
                     use futures_util::SinkExt;
                     adapter
@@ -291,6 +296,7 @@ impl TransportOps for WebSocketTransport {
                         .await
                         .map_err(|e| TransportError::WebSocket(Box::new(e)))
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsServer(adapter) => {
                     use futures_util::SinkExt;
                     adapter
@@ -324,6 +330,7 @@ impl TransportOps for WebSocketTransport {
 
                     Ok(to_copy)
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsClient(adapter) => {
                     adapter.ensure_data().await?;
 
@@ -354,6 +361,7 @@ impl TransportOps for WebSocketTransport {
 
                     Ok(to_copy)
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsServer(adapter) => {
                     adapter.ensure_data().await?;
 
@@ -404,6 +412,7 @@ impl TransportOps for WebSocketTransport {
                         }
                     }
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsClient(adapter) => {
                     // Try graceful WebSocket shutdown first with timeout
                     let graceful_result = timeout(timeout_duration, async {
@@ -450,6 +459,7 @@ impl TransportOps for WebSocketTransport {
                         }
                     }
                 }
+                #[cfg(feature = "tls")]
                 WebSocketTransport::TlsServer(adapter) => {
                     // Try graceful WebSocket shutdown first with timeout
                     let graceful_result = timeout(timeout_duration, async {

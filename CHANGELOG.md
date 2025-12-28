@@ -1,5 +1,7 @@
 # 0.6.1
 
+* Make underlying transportation optional. #30
+  * `tls`, `ws`, and `quic` feature flags are introduced (by default enabled).
 * Add erase_stored_publish() method to Connection. #29
 
 # 0.6.0

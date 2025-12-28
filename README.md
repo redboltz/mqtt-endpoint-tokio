@@ -44,6 +44,38 @@ Add this to your `Cargo.toml`:
 mqtt-endpoint-tokio = "0.6"
 ```
 
+### Optional Features
+
+The library provides optional features to reduce dependencies based on your transport needs:
+
+```toml
+# All transports enabled (default)
+mqtt-endpoint-tokio = "0.6"
+
+# Only TCP transport (minimal dependencies)
+mqtt-endpoint-tokio = { version = "0.6", default-features = false }
+
+# TCP + TLS
+mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["tls"] }
+
+# TCP + WebSocket
+mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["ws"] }
+
+# TCP + QUIC (includes TLS)
+mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["quic"] }
+
+# Custom combination
+mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["tls", "ws"] }
+```
+
+**Available Features:**
+- `tls` - TLS transport support (enabled by default)
+- `ws` - WebSocket transport support (enabled by default)
+- `quic` - QUIC transport support (enabled by default, requires `tls`)
+- `tracing` - Enable tracing support for debugging
+
+**Default features:** `["tls", "ws", "quic"]`
+
 ### Basic Client Example
 
 ```rust
