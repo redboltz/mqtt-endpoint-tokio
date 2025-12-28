@@ -35,6 +35,8 @@ use std::net::SocketAddr;
 #[cfg(any(feature = "tls", feature = "quic"))]
 use std::sync::Arc;
 use tokio::net::TcpStream;
+#[cfg(all(feature = "unix-socket", unix))]
+use tokio::net::UnixStream;
 use tokio::time::Duration;
 #[cfg(feature = "tls")]
 use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
@@ -558,4 +560,54 @@ pub async fn connect_quic(
     };
 
     Ok((send_stream, recv_stream))
+}
+
+/// Establishes a Unix domain socket connection to the specified path.
+///
+/// This function creates a Unix domain socket connection that can be used with
+/// `UnixStreamTransport::from_stream`. It's ideal for local inter-process communication
+/// where both client and broker run on the same Unix-based system.
+///
+/// # Platform Support
+///
+/// This function is only available on Unix-based systems (Linux, macOS, BSD, etc.).
+///
+/// # Parameters
+///
+/// * `path` - The path to the Unix domain socket (e.g., "/tmp/mqtt.sock")
+/// * `timeout` - Optional timeout for the connection (None for no timeout)
+///
+/// # Returns
+///
+/// Returns a connected `UnixStream` or a `TransportError` if the connection fails.
+///
+/// # Examples
+///
+/// ```rust
+/// use mqtt_endpoint_tokio::mqtt_ep::transport::{connect_helper, UnixStreamTransport};
+/// use tokio::time::Duration;
+///
+/// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+/// // Without timeout
+/// let unix_stream = connect_helper::connect_unix("/tmp/mqtt.sock", None).await?;
+/// let transport = UnixStreamTransport::from_stream(unix_stream);
+///
+/// // With timeout
+/// let unix_stream = connect_helper::connect_unix("/tmp/mqtt.sock", Some(Duration::from_secs(5))).await?;
+/// let transport = UnixStreamTransport::from_stream(unix_stream);
+/// # Ok(())
+/// # }
+/// ```
+#[cfg(all(feature = "unix-socket", unix))]
+pub async fn connect_unix(
+    path: &str,
+    timeout: Option<Duration>,
+) -> Result<UnixStream, TransportError> {
+    match timeout {
+        Some(timeout_duration) => tokio::time::timeout(timeout_duration, UnixStream::connect(path))
+            .await
+            .map_err(|_| TransportError::Timeout)?
+            .map_err(TransportError::Io),
+        None => UnixStream::connect(path).await.map_err(TransportError::Io),
+    }
 }

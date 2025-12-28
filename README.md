@@ -35,6 +35,9 @@ WebSocket connections for web-based MQTT clients, supporting both:
 ### QUIC Transport
 High-performance QUIC connections for low-latency MQTT communication using quinn.
 
+### Unix Domain Socket Transport
+Local inter-process communication on Unix-based systems (Linux, macOS, BSD). Ideal for scenarios where the client and broker run on the same machine, offering better performance than TCP/IP sockets.
+
 ## Quick Start
 
 Add this to your `Cargo.toml`:
@@ -72,9 +75,10 @@ mqtt-endpoint-tokio = { version = "0.6", default-features = false, features = ["
 - `tls` - TLS transport support (enabled by default)
 - `ws` - WebSocket transport support (enabled by default)
 - `quic` - QUIC transport support (enabled by default, requires `tls`)
+- `unix-socket` - Unix domain socket transport support (enabled by default, Unix systems only)
 - `tracing` - Enable tracing support for debugging
 
-**Default features:** `["tls", "ws", "quic"]`
+**Default features:** `["tls", "ws", "quic", "unix-socket"]`
 
 ### Basic Client Example
 
@@ -171,6 +175,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     ).await?;
 
     let transport = mqtt_ep::transport::QuicTransport::from_streams(send_stream, recv_stream);
+    // ... rest of MQTT communication
+
+    Ok(())
+}
+```
+
+### Unix Domain Socket Example (Unix systems only)
+
+```rust
+use mqtt_endpoint_tokio::mqtt_ep;
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Connect via Unix domain socket
+    let unix_stream = mqtt_ep::transport::connect_helper::connect_unix(
+        "/tmp/mqtt.sock",
+        None
+    ).await?;
+
+    let transport = mqtt_ep::transport::UnixStreamTransport::from_stream(unix_stream);
     // ... rest of MQTT communication
 
     Ok(())

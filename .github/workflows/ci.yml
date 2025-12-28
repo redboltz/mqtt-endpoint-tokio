@@ -71,6 +71,8 @@ jobs:
             flags: "--no-default-features --features ws"
           - name: "quic-only"
             flags: "--no-default-features --features quic"
+          - name: "unix-socket-only"
+            flags: "--no-default-features --features unix-socket"
           - name: "tls-ws"
             flags: "--no-default-features --features tls,ws"
           - name: "default"

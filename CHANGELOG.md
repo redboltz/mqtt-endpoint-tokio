@@ -1,5 +1,7 @@
 # 0.6.1
 
+* Add Unix Domain Socket support. #31
+  * `unix-socket` feature flag is introduced (by default enabled).
 * Make underlying transportation optional. #30
   * `tls`, `ws`, and `quic` feature flags are introduced (by default enabled).
 * Add erase_stored_publish() method to Connection. #29
