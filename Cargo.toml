@@ -1,6 +1,6 @@
 [package]
 name = "mqtt-endpoint-tokio"
-version = "0.6.1"
+version = "0.6.2"
 edition = "2021"
 rust-version = "1.86.0"
 license = "MIT"
@@ -18,7 +18,7 @@ categories = ["network-programming", "asynchronous", "api-bindings"]
 derive_builder = "0.20"
 getset = "0.1.5"
 tokio = { version = "1.0", features = ["net", "time", "macros", "sync", "io-util", "rt"] }
-mqtt-protocol-core = "0.7"
+mqtt-protocol-core = "0.7.4"
 serde = { version = "1.0", features = ["derive"] }
 prefix_tree_map = "0.2"
 uuid = { version = "1.0", features = ["v4", "serde"] }
