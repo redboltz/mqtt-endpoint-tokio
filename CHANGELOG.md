@@ -1,3 +1,7 @@
+# 0.6.2
+
+* Fix depended mqtt-protocol-core version. (0.7 -> 0.7.4) #32
+
 # 0.6.1
 
 * Add Unix Domain Socket support. #31
