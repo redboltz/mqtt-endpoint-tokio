@@ -1948,15 +1948,44 @@ where
             }
 
             // Process pending recv requests in FIFO order (from front)
-            if let Some((filter, _)) = context.pending_requests.recv.first() {
-                if filter.matches(&packet) {
-                    // Remove the first (oldest) request and send response
-                    let (_, response_tx) = context.pending_requests.recv.remove(0);
-                    let _ = response_tx.send(Ok(packet)); // Only satisfy one request per packet
+            // Try to deliver packet to first matching request
+            // If receiver is dropped (timeout), try next request
+            let mut packet_to_deliver = Some(packet);
+
+            while let Some(pkt) = packet_to_deliver.take() {
+                if context.pending_requests.recv.is_empty() {
+                    // No more requests, packet is dropped
+                    break;
                 }
-                // If packet doesn't match the first filter, we don't consume any request
-                // The packet will be "lost" and the select loop will automatically
-                // call t.recv() again since pending_requests.recv is not empty
+
+                if let Some((filter, _)) = context.pending_requests.recv.first() {
+                    if filter.matches(&pkt) {
+                        // Remove the first (oldest) request and try to send response
+                        let (_, response_tx) = context.pending_requests.recv.remove(0);
+                        match response_tx.send(Ok(pkt)) {
+                            Ok(()) => {
+                                // Successfully delivered packet
+                                break;
+                            }
+                            Err(packet_result) => {
+                                // Receiver dropped (e.g., due to timeout)
+                                // Get packet back and try next request
+                                if let Ok(returned_packet) = packet_result {
+                                    packet_to_deliver = Some(returned_packet);
+                                }
+                                // Continue loop to try next request
+                            }
+                        }
+                    } else {
+                        // Packet doesn't match first filter, drop it
+                        // The select loop will automatically call t.recv() again
+                        // since pending_requests.recv is not empty
+                        break;
+                    }
+                } else {
+                    // No requests in queue
+                    break;
+                }
             }
         }
     }
