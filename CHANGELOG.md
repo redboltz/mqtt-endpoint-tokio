@@ -1,3 +1,7 @@
+# 0.6.3
+
+* Fix packet lost bug when recv() is cancelled and called again. #34
+
 # 0.6.2
 
 * Fix depended mqtt-protocol-core version. (0.7 -> 0.7.4) #32
