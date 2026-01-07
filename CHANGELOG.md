@@ -1,3 +1,7 @@
+# 0.6.4
+
+* Support reconnect after transport failed #33, #35
+
 # 0.6.3
 
 * Fix packet lost bug when recv() is cancelled and called again. #34
