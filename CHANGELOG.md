@@ -1,3 +1,7 @@
+# 0.6.5
+
+* Fix Cancelling GenericEndpoint::recv() can still lead to packet loss bug. #36, #37
+
 # 0.6.4
 
 * Support reconnect after transport failed #33, #35

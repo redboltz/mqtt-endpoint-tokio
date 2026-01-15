@@ -192,6 +192,9 @@ where
     pub consumed_bytes: usize,
     pub queuing_receive_maximum: bool,
     pub offline_publish_enabled: bool,
+    pub undelivered_packet: Option<GenericPacket<PacketIdType>>,
+    #[cfg(feature = "test-delay")]
+    pub test_delay_ms: u64,
 }
 
 impl<PacketIdType> Context<PacketIdType>
@@ -214,6 +217,9 @@ where
             consumed_bytes: 0,
             queuing_receive_maximum: false,
             offline_publish_enabled: false,
+            undelivered_packet: None,
+            #[cfg(feature = "test-delay")]
+            test_delay_ms: 0,
         }
     }
 
@@ -1068,6 +1074,32 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
+    /// Set test delay before packet delivery (in milliseconds)
+    ///
+    /// This method is only available when the `test-delay` feature is enabled.
+    /// It inserts a delay between packet reception and delivery to the recv() caller,
+    /// allowing testing of timeout/cancellation scenarios.
+    ///
+    /// # Arguments
+    ///
+    /// * `delay_ms` - Delay in milliseconds (0 to disable)
+    #[cfg(feature = "test-delay")]
+    pub async fn set_test_delay(&self, delay_ms: u64) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetTestDelay {
+                delay_ms,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
     /// Get QoS 2 publish handled packet IDs
     ///
     /// This method retrieves all packet IDs for QoS 2 PUBLISH packets that have been handled.
@@ -1370,6 +1402,16 @@ where
         let mut context = Context::new(timer_tx.clone(), Duration::from_secs(5)); // Default, will be updated when transport is attached
         let (connection_timeout_tx, mut connection_timeout_rx) = mpsc::unbounded_channel::<()>();
         loop {
+            // Check for undelivered packet first (from previous cancelled recv)
+            // This must be done before the select to avoid borrow issues
+            if context.undelivered_packet.is_some()
+                && !context.pending_requests.recv.is_empty()
+                && Self::try_deliver_undelivered_packet(&mut context).await
+            {
+                // Successfully delivered, continue to check for more work
+                continue;
+            }
+
             tokio::select! {
                 // Handle requests from external API
                 request = rx_send.recv() => {
@@ -1557,6 +1599,11 @@ where
                         }
                         Some(RequestResponse::SetAutoReplaceTopicAliasSend { enabled, response_tx }) => {
                             connection.set_auto_replace_topic_alias_send(enabled);
+                            let _ = response_tx.send(Ok(()));
+                        }
+                        #[cfg(feature = "test-delay")]
+                        Some(RequestResponse::SetTestDelay { delay_ms, response_tx }) => {
+                            context.test_delay_ms = delay_ms;
                             let _ = response_tx.send(Ok(()));
                         }
                         None => break, // Channel closed
@@ -1930,11 +1977,12 @@ where
     }
 
     /// Process all connection events first, then handle packet filtering for recv requests
+    /// Returns true if a packet was successfully delivered, false otherwise
     async fn process_received_packets_and_events(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         context: &mut Context<PacketIdType>,
         events: Vec<mqtt::connection::GenericEvent<PacketIdType>>,
-    ) {
+    ) -> bool {
         // First, process all connection events
         let received_packet = Self::process_connection_events(
             connection,
@@ -1973,6 +2021,13 @@ where
                 }
             }
 
+            // Test delay: wait before attempting to deliver packet
+            // This allows testing timeout/cancellation scenarios
+            #[cfg(feature = "test-delay")]
+            if context.test_delay_ms > 0 {
+                sleep(Duration::from_millis(context.test_delay_ms)).await;
+            }
+
             // Process pending recv requests in FIFO order (from front)
             // Try to deliver packet to first matching request
             // If receiver is dropped (timeout), try next request
@@ -1980,8 +2035,9 @@ where
 
             while let Some(pkt) = packet_to_deliver.take() {
                 if context.pending_requests.recv.is_empty() {
-                    // No more requests, packet is dropped
-                    break;
+                    // No more requests, save packet for later delivery
+                    context.undelivered_packet = Some(pkt);
+                    return false;
                 }
 
                 if let Some((filter, _)) = context.pending_requests.recv.first() {
@@ -1991,7 +2047,7 @@ where
                         match response_tx.send(Ok(pkt)) {
                             Ok(()) => {
                                 // Successfully delivered packet
-                                break;
+                                return true;
                             }
                             Err(packet_result) => {
                                 // Receiver dropped (e.g., due to timeout)
@@ -2003,17 +2059,19 @@ where
                             }
                         }
                     } else {
-                        // Packet doesn't match first filter, drop it
-                        // The select loop will automatically call t.recv() again
-                        // since pending_requests.recv is not empty
-                        break;
+                        // Packet doesn't match first filter, save it for later
+                        context.undelivered_packet = Some(pkt);
+                        return false;
                     }
                 } else {
                     // No requests in queue
-                    break;
+                    context.undelivered_packet = Some(pkt);
+                    return false;
                 }
             }
         }
+        // No packet received or packet was dropped after all receivers failed
+        false
     }
 
     /// Notify all pending recv requests about connection error
@@ -2030,11 +2088,64 @@ where
         }
     }
 
+    /// Attempt to deliver an undelivered packet to a pending recv request
+    /// Returns true if packet was successfully delivered, false otherwise
+    async fn try_deliver_undelivered_packet(context: &mut Context<PacketIdType>) -> bool {
+        if let Some(packet) = context.undelivered_packet.take() {
+            // Try to deliver to any matching pending recv request
+            let mut packet_to_deliver = Some(packet);
+
+            while let Some(pkt) = packet_to_deliver.take() {
+                if context.pending_requests.recv.is_empty() {
+                    // No pending requests, save packet back
+                    context.undelivered_packet = Some(pkt);
+                    return false;
+                }
+
+                if let Some((filter, _)) = context.pending_requests.recv.first() {
+                    if filter.matches(&pkt) {
+                        // Remove the first (oldest) request and try to send response
+                        let (_, response_tx) = context.pending_requests.recv.remove(0);
+                        match response_tx.send(Ok(pkt)) {
+                            Ok(()) => {
+                                // Successfully delivered packet
+                                return true;
+                            }
+                            Err(packet_result) => {
+                                // Receiver dropped (e.g., due to timeout)
+                                // Get packet back and try next request
+                                if let Ok(returned_packet) = packet_result {
+                                    packet_to_deliver = Some(returned_packet);
+                                }
+                                // Continue loop to try next request
+                            }
+                        }
+                    } else {
+                        // Packet doesn't match first filter, save it back
+                        context.undelivered_packet = Some(pkt);
+                        return false;
+                    }
+                } else {
+                    // No requests in queue
+                    context.undelivered_packet = Some(pkt);
+                    return false;
+                }
+            }
+        }
+        false
+    }
+
     /// Process read buffer data - handles one packet per call as per endpoint.recv() semantics
     async fn process_read_buffer(
         connection: &mut mqtt::GenericConnection<Role, PacketIdType>,
         context: &mut Context<PacketIdType>,
     ) {
+        // First, try to deliver any undelivered packet from previous recv cancellation
+        if Self::try_deliver_undelivered_packet(context).await {
+            // Successfully delivered undelivered packet, done for this iteration
+            return;
+        }
+
         if context.consumed_bytes >= context.buffer_size {
             return; // No data to process
         }
@@ -2045,10 +2156,12 @@ where
         let events = connection.recv(&mut cursor);
         let position_after = cursor.position();
 
-        // Update consumed bytes based on what connection.recv() processed
+        // Always update consumed bytes - the data has been parsed from the buffer
         context.consumed_bytes += position_after as usize;
 
         // Process all connection events first, then handle packet filtering
+        // If packet delivery fails (e.g., recv() is cancelled), the packet will be
+        // saved in context.undelivered_packet and delivered on the next iteration
         Self::process_received_packets_and_events(connection, context, events).await;
     }
 }
