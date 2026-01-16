@@ -118,4 +118,9 @@ where
         enabled: bool,
         response_tx: oneshot::Sender<Result<(), ConnectionError>>,
     },
+    #[cfg(feature = "test-delay")]
+    SetTestDelay {
+        delay_ms: u64,
+        response_tx: oneshot::Sender<Result<(), ConnectionError>>,
+    },
 }

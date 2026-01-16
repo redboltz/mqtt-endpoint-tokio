@@ -57,6 +57,9 @@ jobs:
     - name: Run tests
       run: cargo test --verbose -- --nocapture
 
+    - name: Run test-delay feature tests
+      run: cargo test --test endpoint-recv-timeout-delay --features test-delay --verbose -- --nocapture
+
   feature-check:
     name: Feature Combination Check
     runs-on: ubuntu-latest
@@ -77,6 +80,8 @@ jobs:
             flags: "--no-default-features --features tls,ws"
           - name: "default"
             flags: ""
+          - name: "test-delay"
+            flags: "--features test-delay"
 
     steps:
     - uses: actions/checkout@v4

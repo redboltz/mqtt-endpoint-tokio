@@ -192,6 +192,8 @@ where
     pub consumed_bytes: usize,
     pub queuing_receive_maximum: bool,
     pub offline_publish_enabled: bool,
+    #[cfg(feature = "test-delay")]
+    pub test_delay_ms: u64,
 }
 
 impl<PacketIdType> Context<PacketIdType>
@@ -214,6 +216,8 @@ where
             consumed_bytes: 0,
             queuing_receive_maximum: false,
             offline_publish_enabled: false,
+            #[cfg(feature = "test-delay")]
+            test_delay_ms: 0,
         }
     }
 
@@ -1068,6 +1072,32 @@ where
             .map_err(|_| ConnectionError::ChannelClosed)?
     }
 
+    /// Set test delay before packet delivery (in milliseconds)
+    ///
+    /// This method is only available when the `test-delay` feature is enabled.
+    /// It inserts a delay between packet reception and delivery to the recv() caller,
+    /// allowing testing of timeout/cancellation scenarios.
+    ///
+    /// # Arguments
+    ///
+    /// * `delay_ms` - Delay in milliseconds (0 to disable)
+    #[cfg(feature = "test-delay")]
+    pub async fn set_test_delay(&self, delay_ms: u64) -> Result<(), ConnectionError> {
+        let tx_send = self.get_tx_send();
+        let (response_tx, response_rx) = oneshot::channel();
+
+        tx_send
+            .send(RequestResponse::SetTestDelay {
+                delay_ms,
+                response_tx,
+            })
+            .map_err(|_| ConnectionError::ChannelClosed)?;
+
+        response_rx
+            .await
+            .map_err(|_| ConnectionError::ChannelClosed)?
+    }
+
     /// Get QoS 2 publish handled packet IDs
     ///
     /// This method retrieves all packet IDs for QoS 2 PUBLISH packets that have been handled.
@@ -1559,6 +1589,11 @@ where
                             connection.set_auto_replace_topic_alias_send(enabled);
                             let _ = response_tx.send(Ok(()));
                         }
+                        #[cfg(feature = "test-delay")]
+                        Some(RequestResponse::SetTestDelay { delay_ms, response_tx }) => {
+                            context.test_delay_ms = delay_ms;
+                            let _ = response_tx.send(Ok(()));
+                        }
                         None => break, // Channel closed
                     }
                 }
@@ -1973,6 +2008,13 @@ where
                 }
             }
 
+            // Test delay: wait before attempting to deliver packet
+            // This allows testing timeout/cancellation scenarios
+            #[cfg(feature = "test-delay")]
+            if context.test_delay_ms > 0 {
+                sleep(Duration::from_millis(context.test_delay_ms)).await;
+            }
+
             // Process pending recv requests in FIFO order (from front)
             // Try to deliver packet to first matching request
             // If receiver is dropped (timeout), try next request
@@ -2004,8 +2046,6 @@ where
                         }
                     } else {
                         // Packet doesn't match first filter, drop it
-                        // The select loop will automatically call t.recv() again
-                        // since pending_requests.recv is not empty
                         break;
                     }
                 } else {
@@ -2045,7 +2085,7 @@ where
         let events = connection.recv(&mut cursor);
         let position_after = cursor.position();
 
-        // Update consumed bytes based on what connection.recv() processed
+        // Always update consumed bytes - the data has been parsed from the buffer
         context.consumed_bytes += position_after as usize;
 
         // Process all connection events first, then handle packet filtering
