@@ -357,3 +357,164 @@ async fn test_multiple_packets_with_cancel_during_processing() {
 
     let _client_endpoint = client_task.await.unwrap();
 }
+
+/// Test that covers try_deliver_undelivered_packet edge cases:
+/// - Line 2118: receiver dropped during undelivered packet delivery attempt
+/// - Line 2101: no pending requests after removing the dropped receiver
+///
+/// Scenario:
+/// 1. recv() times out during processing, packet becomes undelivered
+/// 2. Another recv() with very short timeout is issued and times out
+/// 3. Server sends more data, triggering process_read_buffer
+/// 4. try_deliver_undelivered_packet tries to deliver to the dropped receiver
+/// 5. Delivery fails, packet is saved back to undelivered_packet
+/// 6. Verify packet is still retrievable
+#[tokio::test]
+async fn test_undelivered_packet_with_dropped_receiver() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    // Channel for server -> client signaling
+    let (server_tx, mut client_rx) = tokio::sync::mpsc::channel::<()>(4);
+    // Channel for client -> server signaling
+    let (client_tx, mut server_rx) = tokio::sync::mpsc::channel::<()>(4);
+
+    let client_task = tokio::spawn(async move {
+        let client_stream =
+            mqtt_ep::transport::connect_helper::connect_tcp(&addr.to_string(), None)
+                .await
+                .unwrap();
+        let client_transport = mqtt_ep::transport::TcpTransport::from_stream(client_stream);
+        let client_endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Client> =
+            mqtt_ep::endpoint::Endpoint::new(mqtt_ep::Version::V5_0);
+        client_endpoint
+            .attach(client_transport, mqtt_ep::endpoint::Mode::Client)
+            .await
+            .unwrap();
+
+        // Handshake
+        let connect = mqtt_ep::packet::v5_0::Connect::builder()
+            .client_id("dropped-receiver-test")
+            .unwrap()
+            .keep_alive(60)
+            .clean_start(true)
+            .build()
+            .unwrap();
+        client_endpoint.send(connect).await.unwrap();
+
+        let packet = client_endpoint.recv().await.unwrap();
+        assert!(matches!(
+            packet,
+            mqtt_ep::packet::GenericPacket::V5_0Connack(_)
+        ));
+
+        // Wait for server to send PUBLISH1
+        client_rx.recv().await.unwrap();
+
+        // Small sleep to ensure PUBLISH1 is on the wire
+        tokio::time::sleep(Duration::from_millis(10)).await;
+
+        // Set delay - this will cause the first recv() to timeout
+        client_endpoint.set_test_delay(150).await.unwrap();
+
+        // First recv() with short timeout - will timeout during delay
+        // PUBLISH1 will be saved as undelivered
+        let result1 = timeout(Duration::from_millis(50), client_endpoint.recv()).await;
+        assert!(result1.is_err(), "First recv should timeout");
+
+        // Signal server to send PUBLISH2 (this will trigger transport activity)
+        client_tx.send(()).await.unwrap();
+
+        // Second recv() with very short timeout
+        // This creates a pending request that will be dropped quickly
+        // When process_read_buffer is called (from PUBLISH2 arrival),
+        // try_deliver_undelivered_packet will find this dropped receiver
+        let result2 = timeout(Duration::from_millis(1), client_endpoint.recv()).await;
+        assert!(result2.is_err(), "Second recv should timeout immediately");
+
+        // Small sleep to let PUBLISH2 arrive and be processed
+        // At this point:
+        // - PUBLISH1 is in undelivered_packet
+        // - The recv() request from result2 is dropped
+        // - PUBLISH2 arrives, process_read_buffer is called
+        // - try_deliver_undelivered_packet finds PUBLISH1, tries to deliver to dropped receiver
+        // - Line 2118 is hit (receiver dropped)
+        // - Line 2101 is hit (no more pending requests)
+        // - PUBLISH1 is saved back to undelivered_packet
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        // Reset delay for remaining recv calls
+        client_endpoint.set_test_delay(0).await.unwrap();
+
+        // Now recv() should get PUBLISH1 (from undelivered_packet)
+        let packet1 = client_endpoint.recv().await.unwrap();
+        if let mqtt_ep::packet::GenericPacket::V5_0Publish(publish) = packet1 {
+            assert_eq!(publish.payload().as_slice(), b"dropped-receiver-test-1");
+        } else {
+            panic!("Expected PUBLISH1 packet, got {:?}", packet1);
+        }
+
+        // And recv() should get PUBLISH2
+        let packet2 = client_endpoint.recv().await.unwrap();
+        if let mqtt_ep::packet::GenericPacket::V5_0Publish(publish) = packet2 {
+            assert_eq!(publish.payload().as_slice(), b"dropped-receiver-test-2");
+        } else {
+            panic!("Expected PUBLISH2 packet, got {:?}", packet2);
+        }
+
+        client_endpoint
+    });
+
+    // Server side
+    let (server_stream, _) = listener.accept().await.unwrap();
+    let server_transport = mqtt_ep::transport::TcpTransport::from_stream(server_stream);
+    let server_endpoint: mqtt_ep::Endpoint<mqtt_ep::role::Server> =
+        mqtt_ep::endpoint::Endpoint::new(mqtt_ep::Version::V5_0);
+    server_endpoint
+        .attach(server_transport, mqtt_ep::endpoint::Mode::Server)
+        .await
+        .unwrap();
+
+    // CONNECT
+    let _connect = server_endpoint.recv().await.unwrap();
+
+    // CONNACK
+    let connack = mqtt_ep::packet::v5_0::Connack::builder()
+        .session_present(false)
+        .reason_code(mqtt_ep::result_code::ConnectReasonCode::Success)
+        .build()
+        .unwrap();
+    server_endpoint.send(connack).await.unwrap();
+
+    // Send PUBLISH1
+    let publish1 = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/dropped")
+        .unwrap()
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"dropped-receiver-test-1")
+        .build()
+        .unwrap();
+    server_endpoint.send(publish1).await.unwrap();
+
+    // Signal client that PUBLISH1 is sent
+    server_tx.send(()).await.unwrap();
+
+    // Wait for client to signal for PUBLISH2
+    server_rx.recv().await.unwrap();
+
+    // Small delay to let client's short-timeout recv() be issued and timeout
+    tokio::time::sleep(Duration::from_millis(10)).await;
+
+    // Send PUBLISH2
+    let publish2 = mqtt_ep::packet::v5_0::Publish::builder()
+        .topic_name("test/dropped")
+        .unwrap()
+        .qos(mqtt_ep::packet::Qos::AtMostOnce)
+        .payload(b"dropped-receiver-test-2")
+        .build()
+        .unwrap();
+    server_endpoint.send(publish2).await.unwrap();
+
+    // Wait for client to complete
+    let _client_endpoint = client_task.await.unwrap();
+}

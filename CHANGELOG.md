@@ -1,6 +1,6 @@
 # 0.6.5
 
-* Fix Cancelling GenericEndpoint::recv() can still lead to packet loss bug. #36, #37
+* Fix Cancelling GenericEndpoint::recv() can still lead to packet loss bug. #36, #38
 
 # 0.6.4
 
