@@ -1406,7 +1406,7 @@ where
             // This must be done before the select to avoid borrow issues
             if context.undelivered_packet.is_some()
                 && !context.pending_requests.recv.is_empty()
-                && Self::try_deliver_undelivered_packet(&mut context).await
+                && Self::try_deliver_undelivered_packet(&mut context)
             {
                 // Successfully delivered, continue to check for more work
                 continue;
@@ -2028,49 +2028,17 @@ where
                 sleep(Duration::from_millis(context.test_delay_ms)).await;
             }
 
-            // Process pending recv requests in FIFO order (from front)
-            // Try to deliver packet to first matching request
-            // If receiver is dropped (timeout), try next request
-            let mut packet_to_deliver = Some(packet);
-
-            while let Some(pkt) = packet_to_deliver.take() {
-                if context.pending_requests.recv.is_empty() {
-                    // No more requests, save packet for later delivery
-                    context.undelivered_packet = Some(pkt);
-                    return false;
-                }
-
-                if let Some((filter, _)) = context.pending_requests.recv.first() {
-                    if filter.matches(&pkt) {
-                        // Remove the first (oldest) request and try to send response
-                        let (_, response_tx) = context.pending_requests.recv.remove(0);
-                        match response_tx.send(Ok(pkt)) {
-                            Ok(()) => {
-                                // Successfully delivered packet
-                                return true;
-                            }
-                            Err(packet_result) => {
-                                // Receiver dropped (e.g., due to timeout)
-                                // Get packet back and try next request
-                                if let Ok(returned_packet) = packet_result {
-                                    packet_to_deliver = Some(returned_packet);
-                                }
-                                // Continue loop to try next request
-                            }
-                        }
-                    } else {
-                        // Packet doesn't match first filter, save it for later
-                        context.undelivered_packet = Some(pkt);
-                        return false;
-                    }
-                } else {
-                    // No requests in queue
-                    context.undelivered_packet = Some(pkt);
-                    return false;
-                }
+            // Try to deliver packet to pending recv requests
+            if let Some(undelivered) =
+                Self::try_deliver_to_pending_requests(packet, &mut context.pending_requests.recv)
+            {
+                // Couldn't deliver, save for later
+                context.undelivered_packet = Some(undelivered);
+                return false;
             }
+            return true;
         }
-        // No packet received or packet was dropped after all receivers failed
+        // No packet received
         false
     }
 
@@ -2088,49 +2056,60 @@ where
         }
     }
 
-    /// Attempt to deliver an undelivered packet to a pending recv request
-    /// Returns true if packet was successfully delivered, false otherwise
-    async fn try_deliver_undelivered_packet(context: &mut Context<PacketIdType>) -> bool {
-        if let Some(packet) = context.undelivered_packet.take() {
-            // Try to deliver to any matching pending recv request
-            let mut packet_to_deliver = Some(packet);
+    /// Try to deliver a packet to pending recv requests.
+    ///
+    /// Returns `Some(packet)` if packet couldn't be delivered (no matching request or all receivers dropped).
+    /// Returns `None` if packet was successfully delivered.
+    fn try_deliver_to_pending_requests(
+        packet: GenericPacket<PacketIdType>,
+        pending_recv: &mut RequestRecvVec<PacketIdType>,
+    ) -> Option<GenericPacket<PacketIdType>> {
+        let mut packet_to_deliver = Some(packet);
 
-            while let Some(pkt) = packet_to_deliver.take() {
-                if context.pending_requests.recv.is_empty() {
-                    // No pending requests, save packet back
-                    context.undelivered_packet = Some(pkt);
-                    return false;
-                }
-
-                if let Some((filter, _)) = context.pending_requests.recv.first() {
-                    if filter.matches(&pkt) {
-                        // Remove the first (oldest) request and try to send response
-                        let (_, response_tx) = context.pending_requests.recv.remove(0);
-                        match response_tx.send(Ok(pkt)) {
-                            Ok(()) => {
-                                // Successfully delivered packet
-                                return true;
-                            }
-                            Err(packet_result) => {
-                                // Receiver dropped (e.g., due to timeout)
-                                // Get packet back and try next request
-                                if let Ok(returned_packet) = packet_result {
-                                    packet_to_deliver = Some(returned_packet);
-                                }
-                                // Continue loop to try next request
-                            }
+        while let Some(pkt) = packet_to_deliver.take() {
+            if let Some((filter, _)) = pending_recv.first() {
+                if filter.matches(&pkt) {
+                    // Remove the first (oldest) request and try to send response
+                    let (_, response_tx) = pending_recv.remove(0);
+                    match response_tx.send(Ok(pkt)) {
+                        Ok(()) => {
+                            // Successfully delivered packet
+                            return None;
                         }
-                    } else {
-                        // Packet doesn't match first filter, save it back
-                        context.undelivered_packet = Some(pkt);
-                        return false;
+                        Err(packet_result) => {
+                            // Receiver dropped (e.g., due to timeout)
+                            // Get packet back and try next request
+                            if let Ok(returned_packet) = packet_result {
+                                packet_to_deliver = Some(returned_packet);
+                            }
+                            // Continue loop to try next request
+                        }
                     }
                 } else {
-                    // No requests in queue
-                    context.undelivered_packet = Some(pkt);
-                    return false;
+                    // Packet doesn't match first filter
+                    return Some(pkt);
                 }
+            } else {
+                // No pending requests
+                return Some(pkt);
             }
+        }
+        None
+    }
+
+    /// Attempt to deliver an undelivered packet to a pending recv request.
+    /// Returns true if packet was successfully delivered, false otherwise.
+    fn try_deliver_undelivered_packet(context: &mut Context<PacketIdType>) -> bool {
+        if let Some(packet) = context.undelivered_packet.take() {
+            if let Some(undelivered) =
+                Self::try_deliver_to_pending_requests(packet, &mut context.pending_requests.recv)
+            {
+                // Couldn't deliver, save it back
+                context.undelivered_packet = Some(undelivered);
+                return false;
+            }
+            // Successfully delivered
+            return true;
         }
         false
     }
@@ -2141,7 +2120,7 @@ where
         context: &mut Context<PacketIdType>,
     ) {
         // First, try to deliver any undelivered packet from previous recv cancellation
-        if Self::try_deliver_undelivered_packet(context).await {
+        if Self::try_deliver_undelivered_packet(context) {
             // Successfully delivered undelivered packet, done for this iteration
             return;
         }
