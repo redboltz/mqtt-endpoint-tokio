@@ -149,6 +149,9 @@ async fn run_tls_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> 
 }
 
 /// Test WebSocket server that accepts connections with MQTT subprotocol
+// The accept_hdr_async callback signature is dictated by tungstenite; its
+// large Err variant (http::Response) cannot be boxed here, so allow the lint.
+#[allow(clippy::result_large_err)]
 async fn run_ws_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> SocketAddr {
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
     use tokio_tungstenite::tungstenite::http::HeaderValue;
@@ -200,6 +203,9 @@ async fn run_ws_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> S
 }
 
 /// Test TLS WebSocket server that accepts connections with MQTT subprotocol
+// The accept_hdr_async callback signature is dictated by tungstenite; its
+// large Err variant (http::Response) cannot be boxed here, so allow the lint.
+#[allow(clippy::result_large_err)]
 async fn run_tls_ws_test_server(addr: &str, shutdown_rx: oneshot::Receiver<()>) -> SocketAddr {
     use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
     use tokio_tungstenite::tungstenite::http::HeaderValue;
