@@ -699,7 +699,6 @@ async fn test_connect_quic() {
 }
 
 #[tokio::test]
-#[ignore = "Requires QUIC server setup for certificate verification testing"]
 async fn test_connect_quic_with_server() {
     common::init_tracing();
 
@@ -751,11 +750,14 @@ async fn test_connect_quic_with_server() {
         // Success means we covered the NoVerification methods
     }
 
-    // Test with timeout None to cover stream opening None branch
+    // Test the None-domain (insecure) path again with a bounded timeout.
+    // The single-shot server above no longer accepts connections, so a None
+    // timeout here would block until the 300s idle timeout. Use a short timeout
+    // to keep the test from hanging.
     let _result = mqtt_ep::transport::connect_helper::connect_quic(
         &server_addr.to_string(),
         None,
-        None, // No timeout - covers lines 544-547
+        Some(Duration::from_millis(500)),
     )
     .await;
 

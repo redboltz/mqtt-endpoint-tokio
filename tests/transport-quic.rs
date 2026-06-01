@@ -163,7 +163,6 @@ async fn test_quic_transport_client_server_v311() {
 }
 
 #[tokio::test]
-#[ignore = "QUIC test unstable in CI"]
 async fn test_quic_transport_from_streams() {
     common::init_tracing();
 
@@ -214,7 +213,11 @@ async fn test_quic_transport_from_streams() {
         Ok(Err(e)) => panic!("QUIC connection failed: {e}"),
         Err(_) => panic!("QUIC connection timeout"),
     };
-    let (send_stream, recv_stream) = connection.open_bi().await.unwrap();
+    let (mut send_stream, recv_stream) = connection.open_bi().await.unwrap();
+    // In QUIC, the peer is not notified of a freshly opened bidi stream until the
+    // first STREAM frame is sent. Write a byte so the server's accept_bi() resolves
+    // instead of waiting for the connection idle timeout.
+    send_stream.write_all(b"x").await.unwrap();
     let transport = mqtt_ep::transport::QuicTransport::from_streams(send_stream, recv_stream);
     assert!(format!("{:?}", transport).contains("QuicTransport"));
 
@@ -222,7 +225,6 @@ async fn test_quic_transport_from_streams() {
 }
 
 #[tokio::test]
-#[ignore = "QUIC test unstable in CI"]
 async fn test_quic_transport_stream_access() {
     common::init_tracing();
 
@@ -283,7 +285,11 @@ async fn test_quic_transport_stream_access() {
         Ok(Err(e)) => panic!("QUIC connection failed: {e}"),
         Err(_) => panic!("QUIC connection timeout"),
     };
-    let (send_stream, recv_stream) = connection.open_bi().await.unwrap();
+    let (mut send_stream, recv_stream) = connection.open_bi().await.unwrap();
+    // In QUIC, the peer is not notified of a freshly opened bidi stream until the
+    // first STREAM frame is sent. Write a byte so the server's accept_bi() resolves
+    // instead of waiting for the connection idle timeout.
+    send_stream.write_all(b"x").await.unwrap();
     let mut transport = mqtt_ep::transport::QuicTransport::from_streams(send_stream, recv_stream);
 
     // Test client-side stream access
