@@ -24,6 +24,11 @@
 // Core protocol types and traits
 pub use mqtt_protocol_core::mqtt::Version;
 
+// Connection construction-time options (from mqtt-protocol-core)
+pub mod connection {
+    pub use mqtt_protocol_core::mqtt::connection::{ConnectionOptions, MQTT_PACKET_SIZE_NO_LIMIT};
+}
+
 // Packet module with traits and types
 pub mod packet {
     // Essential traits
@@ -88,6 +93,7 @@ pub mod packet_filter;
 pub mod request_response;
 pub mod transport;
 
+pub use connection::ConnectionOptions;
 pub use connection_error::ConnectionError;
 pub use connection_option::ConnectionOption;
 pub use endpoint::{Endpoint, GenericEndpoint, Mode};
