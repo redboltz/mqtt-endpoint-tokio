@@ -261,7 +261,38 @@ where
     /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::new(mqtt_ep::Version::V5_0);
     /// ```
     pub fn new(version: Version) -> Self {
-        let connection = mqtt::GenericConnection::new(version);
+        Self::with_options(version, mqtt::connection::ConnectionOptions::default())
+    }
+
+    /// Create a new endpoint with construction-time connection options (initially disconnected)
+    ///
+    /// This is the same as [`GenericEndpoint::new`], but the underlying
+    /// `mqtt-protocol-core` connection is created with the given
+    /// [`ConnectionOptions`](crate::mqtt_ep::connection::ConnectionOptions).
+    /// These options (e.g. `maximum_packet_size_recv`, `receive_maximum`) must be
+    /// known before the first byte is received and are fixed for the lifetime of
+    /// the endpoint. `ConnectionOptions::default()` reproduces the behavior of `new()`.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - The MQTT protocol version to use (V3_1_1 or V5_0)
+    /// * `options` - Construction-time options for the underlying connection
+    ///
+    /// # Examples
+    ///
+    /// ```ignore
+    /// use mqtt_endpoint_tokio::mqtt_ep;
+    ///
+    /// let options = mqtt_ep::connection::ConnectionOptions::new()
+    ///     .maximum_packet_size_recv(1024 * 1024)
+    ///     .receive_maximum(10);
+    /// let endpoint = mqtt_ep::endpoint::GenericEndpoint::<mqtt_ep::role::Client, u16>::with_options(
+    ///     mqtt_ep::Version::V5_0,
+    ///     options,
+    /// );
+    /// ```
+    pub fn with_options(version: Version, options: mqtt::connection::ConnectionOptions) -> Self {
+        let connection = mqtt::GenericConnection::with_options(version, options);
         let (tx_send, rx_send) = mpsc::unbounded_channel();
 
         // Start event loop immediately

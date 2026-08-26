@@ -1,3 +1,8 @@
+# 0.6.6
+
+* Update depended mqtt-protocol-core version. (0.7.4 -> 0.7.9) #41
+* Add `GenericEndpoint::with_options()` to pass `ConnectionOptions` (e.g. `maximum_packet_size_recv`, `receive_maximum`) to the underlying connection. `new()` behavior is unchanged. #41
+
 # 0.6.5
 
 * Fix Cancelling GenericEndpoint::recv() can still lead to packet loss bug. #36, #38, #39
